@@ -1,0 +1,8 @@
+{
+  "name": "Drum Pad Stroke Counter",
+  "description": "A modern, ultra-high-performance Progressive Web App (PWA) built specifically for low-latency pad hit tracking.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
