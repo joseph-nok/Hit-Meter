@@ -10,8 +10,8 @@ class StrokeProcessor extends AudioWorkletProcessor {
     this.debounceTimer = 0;
     
     // Default fallback values
-    this.ghostNoteSensitivity = 0.5;
-    this.echoFilterMs = 24;
+    this.ghostNoteSensitivity = 1.3;
+    this.echoFilterMs = 90;
     this.metronomeTicks = [];
 
     // Adaptive timing tracking for resting/tiredness compensation
@@ -43,9 +43,9 @@ class StrokeProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
     return [{
       name: 'ghostNoteSensitivity',
-      defaultValue: 0.5,
-      minValue: 0.01,
-      maxValue: 1.0
+      defaultValue: 1.3,
+      minValue: 1.0,
+      maxValue: 5.0
     }];
   }
 
@@ -58,11 +58,8 @@ class StrokeProcessor extends AudioWorkletProcessor {
     const sampleRateHz = typeof sampleRate !== 'undefined' ? sampleRate : 44100;
     const curTimeSec = typeof currentTime !== 'undefined' ? currentTime : 0;
 
-    // Use either the AudioParam or the direct message setting
-    let sensitivitySetting = this.ghostNoteSensitivity;
-    if (parameters.ghostNoteSensitivity && parameters.ghostNoteSensitivity.length > 0) {
-      sensitivitySetting = parameters.ghostNoteSensitivity[0];
-    }
+    // Use either the AudioParam or the direct message setting, prioritizing direct settings
+    let sensitivitySetting = typeof this.ghostNoteSensitivity === 'number' ? this.ghostNoteSensitivity : 1.3;
 
     // 1. Calculate Block RMS and track peak variations
     let frameRMS = 0;
@@ -138,8 +135,15 @@ class StrokeProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // 4. Mathematical Base Threshold (Lighter slider = lower threshold floor)
-    let dynamicThreshold = this.noiseFloor * (1.2 + (sensitivitySetting * 10.0));
+    // Ensure baseline of at least 1.0 to handle fallback or fractional states safely
+    const clampedSetting = Math.max(1.0, sensitivitySetting);
+    // Normalize 1.0 - 5.0 scale to 1.0 - 2.0 scale for the cubic mathematical headroom curve
+    const normalizedSetting = clampedSetting > 2.0 
+      ? 1.0 + ((clampedSetting - 1.0) / 4.0)
+      : clampedSetting;
+
+    // 4. Mathematical Base Threshold (Cubic scaling for extreme headroom limits at 200%)
+    let dynamicThreshold = this.noiseFloor * (5.0 + (Math.pow(normalizedSetting, 3) * 55.0));
 
     // Adaptive Rhythm-Locking Compensation:
     // When the user has been consistently in time, tiredness shouldn't block softer hits.
@@ -232,8 +236,9 @@ class StrokeProcessor extends AudioWorkletProcessor {
         }
         this.lastHitTime = curTimeSec;
 
-        // Lock out frame evaluations for a custom lockout window (based on ms or default 24ms)
-        const lockoutMs = this.echoFilterMs || 24;
+        // Lock out frame evaluations for a custom lockout window (guaranteed min of 55ms)
+        // This stops mechanical stick vibration, bounciness, and double hits from registering as +2 or +3.
+        const lockoutMs = Math.max(55, this.echoFilterMs || 55);
         this.debounceTimer = (lockoutMs / 1000) * sampleRateHz; 
       }
     }

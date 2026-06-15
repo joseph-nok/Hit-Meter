@@ -34,8 +34,8 @@ export default function App() {
   const [targetBPM, setTargetBPM] = useState(120);
   const [isMetronomePlaying, setIsMetronomePlaying] = useState(false);
 
-  // Pad Strike Sensitivity (1 to 100) - determines physical force required
-  const [strike, setStrike] = useState<number>(30);
+  // Pad Strike Sensitivity (100 to 200) - determines physical force required
+  const [strike, setStrike] = useState<number>(130);
 
   // Zone 3 Presets & Auto Calibration Settings
   const [ghostNoteSetting, setGhostNoteSetting] = useState<'ghost' | 'standard' | 'noisy' | 'calibrated'>('standard');
@@ -133,21 +133,20 @@ export default function App() {
     recalculateSPMRef.current = recalculateSPM;
   }, [targetBPM]);
 
-  // Compute transient strike sensitivity multiplier from 1-100 range.
-  // A low strike value corresponds to highly sensitive (low threshold).
-  // A high strike value corresponds to less sensitive (high threshold).
+  // Compute transient strike sensitivity multiplier from 100-200 range.
+  // 100% is the old limit (sensitivity = 1.0) and 200% is the new extreme strict limit (sensitivity = 5.0).
   const getSensitivityMultiplier = () => {
-    return 0.01 + ((strike - 1) / 99) * 0.99;
+    return 1.0 + ((strike - 100) / 100) * 4.0;
   };
 
-  // Auto-calculated Echo Filter (debounce) timing: 60000 / (BPM * 4) * 0.4
-  // Tightens automatically as tempo increases!
+  // Auto-calculated Echo Filter (debounce) timing
+  // Prevents multiple double/triple trigger counts and chatter on physical pad rattles.
   const getEchoFilterMs = () => {
     if (echoFilterMode === 'fast') {
-      return 12; // Locked low for lightning fast rudiment rolls
+      return 55; // Fast mode is locked to standard fast rollover frequency
     }
-    // Proportional to the metronome grid:
-    return Math.round(60000 / (targetBPM * 4) * 0.4);
+    // Standard mode is proportional to grid but padded to block rebounds/chatter
+    return Math.max(90, Math.round(60000 / (targetBPM * 4) * 0.75));
   };
 
   // Sync settings dynamically straight down to AudioWorklet Node
@@ -225,9 +224,13 @@ export default function App() {
     const savedStrike = localStorage.getItem('pad_strike_sensitivity');
     if (savedStrike) {
       const parsed = parseInt(savedStrike, 10);
-      if (!isNaN(parsed) && parsed >= 1 && parsed <= 100) {
+      if (!isNaN(parsed) && parsed >= 100 && parsed <= 200) {
         setStrike(parsed);
+      } else {
+        setStrike(130);
       }
+    } else {
+      setStrike(130);
     }
 
     // Cleanup loop
@@ -559,6 +562,15 @@ export default function App() {
           // Protect against acoustic feedback from self-synthesized chime or reset tones (lockout of 250ms)
           if (now - lastFeedbackToneTimeRef.current < 250) {
             return;
+          }
+
+          // Double trigger rejection on consecutive incoming events
+          if (hitTimestampsRef.current.length > 0) {
+            const lastRegistered = hitTimestampsRef.current[hitTimestampsRef.current.length - 1];
+            const minInterval = echoFilterMode === 'fast' ? 55 : 90;
+            if ((now - lastRegistered) < minInterval) {
+              return;
+            }
           }
 
           strokeCountRef.current++;
@@ -1234,8 +1246,8 @@ export default function App() {
           <div className="px-1">
             <input 
               type="range"
-              min="1"
-              max="100"
+              min="100"
+              max="200"
               step="1"
               value={strike}
               onChange={(e) => setStrike(Number(e.target.value))}
@@ -1244,8 +1256,8 @@ export default function App() {
           </div>
 
           <div className="flex justify-between text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider px-1">
-            <span>Soft Taps / Arm's Length Away</span>
-            <span>Heavy Solid Strokes / Close to Pad</span>
+            <span>Standard Sensitivity (100%)</span>
+            <span>Ultra Strict Gates / Clean Solid Hits (200%)</span>
           </div>
         </section>
 
