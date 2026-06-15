@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Activity, 
   Mic, 
@@ -59,6 +60,7 @@ export default function App() {
   const [showPWABanner, setShowPWABanner] = useState(false);
   const [isIOSDevice, setIsIOSDevice] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [isNotificationDismissed, setIsNotificationDismissed] = useState(false);
 
 
   // Web Audio framework references
@@ -378,6 +380,47 @@ export default function App() {
 
     return () => clearInterval(calcInterval);
   }, [targetBPM]);
+
+  // Automatically show notification banner when metronome is started
+  useEffect(() => {
+    if (isMetronomePlaying) {
+      setIsNotificationDismissed(false);
+    }
+  }, [isMetronomePlaying]);
+
+  // Media Session API integration to show system media notification & allow lock-screen play/pause
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'mediaSession' in navigator) {
+      if (isMetronomePlaying) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'Pad Striker Cadence Metronome',
+          artist: 'Low Latency Offline Trainer',
+          album: `Active Tempo: ${targetBPM} BPM`,
+          artwork: [
+            { src: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=192&q=80', sizes: '192x192', type: 'image/jpeg' },
+            { src: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=512&q=80', sizes: '512x512', type: 'image/jpeg' }
+          ]
+        });
+        navigator.mediaSession.playbackState = 'playing';
+      } else {
+        navigator.mediaSession.playbackState = 'paused';
+      }
+
+      try {
+        navigator.mediaSession.setActionHandler('play', () => {
+          getOrCreateAudioContext();
+          setIsMetronomePlaying(true);
+          triggerTickTone(1050, 0.05);
+        });
+        navigator.mediaSession.setActionHandler('pause', () => {
+          setIsMetronomePlaying(false);
+          triggerTickTone(900, 0.05);
+        });
+      } catch (error) {
+        console.warn('Media Session Action Handlers failed to bind:', error);
+      }
+    }
+  }, [isMetronomePlaying, targetBPM]);
 
   // Background noise monitoring loop (Only active during calibration)
   useEffect(() => {
@@ -844,6 +887,106 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* METRONOME OVERLAY NOTIFICATION SYSTEM */}
+      <AnimatePresence>
+        {isMetronomePlaying && !isNotificationDismissed && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -15, scale: 0.95 }}
+            transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            className="fixed top-14 left-1/2 -translate-x-1/2 w-full max-w-md px-4 z-50 pointer-events-none"
+          >
+            <div className={`p-3 rounded-2xl border flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md pointer-events-auto transition-colors duration-200 ${
+              isDark 
+                ? 'bg-slate-900/95 border-emerald-500/25 text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.6)]' 
+                : 'bg-white/95 border-emerald-500/20 text-slate-900 shadow-[0_12px_40px_rgba(16,185,129,0.08)]'
+            }`}>
+              {/* Left side: pulsation indicator + Metronome Info */}
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="relative flex h-2 w-2 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[8px] font-black tracking-widest uppercase font-mono text-slate-500">
+                    NOTIFICATION
+                  </p>
+                  <p className="text-xs font-black font-mono tracking-tight text-emerald-500 flex items-center gap-1 mt-0.5">
+                    {targetBPM} <span className={`text-[9px] font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'} font-normal`}>BPM</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Center/Right: Quick adjust buttons & Interactive Play/Pause Action */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {/* Quick minus BPM button */}
+                <button
+                  onClick={() => {
+                    setTargetBPM(b => Math.max(30, b - 2));
+                    triggerTickTone(450, 0.03);
+                  }}
+                  className={`p-1 rounded-lg border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
+                    isDark 
+                      ? 'border-slate-800 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white' 
+                      : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 hover:text-black'
+                  }`}
+                  title="Slower -2 BPM"
+                >
+                  <Minus size={10} />
+                </button>
+
+                {/* Controller Pause button */}
+                <button
+                  onClick={() => {
+                    setIsMetronomePlaying(false);
+                    triggerTickTone(900, 0.05);
+                  }}
+                  className="px-2.5 py-1 rounded-xl font-mono text-[9px] font-black tracking-widest uppercase bg-emerald-500 hover:bg-emerald-400 text-slate-950 hover:scale-[1.03] active:scale-95 transition-all shadow-md cursor-pointer flex items-center gap-1 shrink-0"
+                  title="Pause Clicks"
+                >
+                  <Pause size={9} fill="currentColor" /> PAUSE
+                </button>
+
+                {/* Quick plus BPM button */}
+                <button
+                  onClick={() => {
+                    setTargetBPM(b => Math.min(300, b + 2));
+                    triggerTickTone(550, 0.03);
+                  }}
+                  className={`p-1 rounded-lg border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
+                    isDark 
+                      ? 'border-slate-800 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white' 
+                      : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 hover:text-black'
+                  }`}
+                  title="Faster +2 BPM"
+                >
+                  <Plus size={10} />
+                </button>
+
+                <span className={`w-[1px] h-4 self-center mx-0.5 ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} />
+
+                {/* Controller Dismiss button */}
+                <button
+                  onClick={() => {
+                    setIsNotificationDismissed(true);
+                    triggerTickTone(400, 0.04);
+                  }}
+                  className={`p-1 rounded-full border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
+                    isDark 
+                      ? 'border-slate-800 bg-slate-950 text-slate-550 hover:text-rose-400 hover:border-slate-700' 
+                      : 'border-slate-200 bg-slate-100 text-slate-500 hover:text-rose-500 hover:border-slate-300'
+                  }`}
+                  title="Dismiss alert card"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* MAIN CONTAINER */}
       <main className="max-w-md mx-auto w-full px-4 py-4 flex-grow flex flex-col justify-center gap-3.5 z-10">
