@@ -195,7 +195,7 @@ export default function App() {
     const savedBPM = localStorage.getItem('pad_target_bpm');
     if (savedBPM) {
       const parsed = parseInt(savedBPM, 10);
-      if (!isNaN(parsed) && parsed >= 30 && parsed <= 300) setTargetBPM(parsed);
+      if (!isNaN(parsed) && parsed >= 30 && parsed <= 500) setTargetBPM(parsed);
     }
 
     const savedGhostSetting = localStorage.getItem('pad_ghost_setting');
@@ -713,7 +713,7 @@ export default function App() {
       const avg = g_intervals.reduce((a, b) => a + b, 0) / g_intervals.length;
       if (avg > 150) {
         const computedBPM = Math.round(60000 / avg);
-        if (computedBPM >= 30 && computedBPM <= 300) {
+        if (computedBPM >= 30 && computedBPM <= 500) {
           setTargetBPM(computedBPM);
         }
       }
@@ -1005,7 +1005,7 @@ export default function App() {
                 {/* Quick plus BPM button */}
                 <button
                   onClick={() => {
-                    setTargetBPM(b => Math.min(300, b + 2));
+                    setTargetBPM(b => Math.min(500, b + 2));
                   }}
                   className={`p-1 rounded-lg border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
                     isDark 
@@ -1156,7 +1156,7 @@ export default function App() {
 
             {/* Increase tempo */}
             <button 
-              onClick={() => setTargetBPM(b => Math.min(300, b + 2))}
+              onClick={() => setTargetBPM(b => Math.min(500, b + 2))}
               className={`w-11 h-11 rounded-xl ${isDark ? 'bg-slate-950 border-slate-800 hover:bg-slate-900 text-slate-400' : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-650'} flex items-center justify-center active:scale-95 transition-all cursor-pointer font-mono font-black`}
             >
               <Plus size={12} className="text-emerald-505 text-emerald-500" />
@@ -1174,7 +1174,7 @@ export default function App() {
               <input 
                 type="range"
                 min="40"
-                max="240"
+                max="500"
                 step="1"
                 value={targetBPM}
                 onChange={(e) => setTargetBPM(Number(e.target.value))}
