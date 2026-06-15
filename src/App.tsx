@@ -1223,7 +1223,7 @@ export default function App() {
           <div className="flex items-center justify-between">
             <h2 className={`text-[10px] font-black font-mono tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-550'} uppercase flex items-center gap-1`}>
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-              Pad Response & Microphone Reach
+              Hit Detection
             </h2>
             <span className="text-[10px] bg-indigo-600/10 border border-indigo-500/20 px-2 py-0.5 rounded text-indigo-400 font-mono font-black uppercase">
               STRIKE: {strike}%
