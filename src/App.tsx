@@ -13,7 +13,13 @@ import {
   SlidersHorizontal,
   RefreshCw,
   Sparkles,
-  Volume2
+  Volume2,
+  X,
+  Smartphone,
+  Download,
+  Share,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 export default function App() {
@@ -50,6 +56,10 @@ export default function App() {
   // PWA offline installation states
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [showInstallBtn, setShowInstallBtn] = useState(false);
+  const [showPWABanner, setShowPWABanner] = useState(false);
+  const [isIOSDevice, setIsIOSDevice] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
 
   // Web Audio framework references
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -126,6 +136,14 @@ export default function App() {
     if (typeof window !== 'undefined') {
       window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.addEventListener('appinstalled', handleAppInstalled);
+
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true;
+      const dismissed = localStorage.getItem('pad_pwa_dismissed_v2') === 'true';
+      if (!isStandalone && !dismissed) {
+        setShowPWABanner(true);
+      }
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+      setIsIOSDevice(isIOS);
     }
 
     // Restore cached parameters
@@ -153,6 +171,11 @@ export default function App() {
     const savedTolerance = localStorage.getItem('pad_tolerance') || '8';
     setTolerance(parseInt(savedTolerance, 10));
 
+    const savedTheme = localStorage.getItem('pad_theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') {
+      setTheme(savedTheme);
+    }
+
     // Cleanup loop
     return () => {
       cleanupAudio();
@@ -161,6 +184,7 @@ export default function App() {
         window.removeEventListener('appinstalled', handleAppInstalled);
       }
     };
+
   }, []);
 
   // Write changes back to Local Storage
@@ -171,8 +195,9 @@ export default function App() {
       localStorage.setItem('pad_calibrated_threshold', calibratedThresholdApplied.toString());
       localStorage.setItem('pad_echo_filter_mode', echoFilterMode);
       localStorage.setItem('pad_tolerance', tolerance.toString());
+      localStorage.setItem('pad_theme', theme);
     }
-  }, [targetBPM, ghostNoteSetting, calibratedThresholdApplied, echoFilterMode, tolerance, isMounted]);
+  }, [targetBPM, ghostNoteSetting, calibratedThresholdApplied, echoFilterMode, tolerance, theme, isMounted]);
 
   // Lazy constructor for absolute latency web audio ticks
   const getOrCreateAudioContext = (): AudioContext | null => {
@@ -581,11 +606,20 @@ export default function App() {
       const { outcome } = await deferredPrompt.userChoice;
       if (outcome === 'accepted') {
         console.log('User signed offline local setup');
+        localStorage.setItem('pad_pwa_dismissed_v2', 'true');
+        setShowPWABanner(false);
       }
     } catch (_) {}
     setDeferredPrompt(null);
     setShowInstallBtn(false);
   };
+
+  const handleDismissPWA = () => {
+    localStorage.setItem('pad_pwa_dismissed_v2', 'true');
+    setShowPWABanner(false);
+    triggerTickTone(450, 0.05);
+  };
+
 
   // Cadence timing states
   const isStroking = liveSPM > 0;
@@ -599,47 +633,198 @@ export default function App() {
 
   if (!isMounted) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center font-mono">
-        <Activity className="animate-spin text-emerald-400 mb-3" size={32} />
+      <div className={`min-h-screen ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} flex flex-col items-center justify-center font-mono transition-colors duration-200`}>
+        <Activity className="animate-spin text-emerald-500 mb-3" size={32} />
         <p className="text-xs tracking-widest uppercase">Initializing acoustics...</p>
       </div>
     );
   }
 
+  const isDark = theme === 'dark';
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col justify-between selection:bg-rose-500 selection:text-white relative overflow-hidden">
+    <div className={`min-h-screen ${isDark ? 'bg-slate-950 text-slate-100 selection:bg-rose-500 selection:text-white' : 'bg-slate-50 text-slate-900 selection:bg-emerald-500 selection:text-white'} font-sans flex flex-col justify-between relative overflow-hidden transition-colors duration-200`}>
       
       {/* Background Ambience Grid */}
-      <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-25 pointer-events-none" />
+      <div className={`absolute inset-0 bg-[radial-gradient(${isDark ? '#1e293b' : '#cbd5e1'}_1px,transparent_1px)] [background-size:16px_16px] opacity-25 pointer-events-none`} />
+
+      {/* PWA INSTALLATION PROMPT OVERLAY */}
+      {showPWABanner && (
+        <div className={`fixed inset-0 ${isDark ? 'bg-slate-950/80' : 'bg-slate-900/40'} backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in`}>
+          <div className={`${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xl'} border rounded-3xl p-6 max-w-sm w-full space-y-5 relative`}>
+            
+            {/* Close Button */}
+            <button 
+              onClick={handleDismissPWA}
+              className={`absolute top-4 right-4 transition-colors p-1 rounded-full border cursor-pointer flex items-center justify-center ${
+                isDark 
+                  ? 'text-slate-500 hover:text-slate-300 bg-slate-950 border-slate-800 hover:border-slate-700' 
+                  : 'text-slate-400 hover:text-slate-600 bg-slate-100 border-slate-200 hover:border-slate-300'
+              }`}
+              title="Dismiss instruction"
+            >
+              <X size={14} />
+            </button>
+
+            {/* Icon Circle */}
+            <div className="flex justify-center">
+              <div className={`w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-500/20 to-teal-400/10 border ${isDark ? 'border-emerald-500/30' : 'border-emerald-500/40'} flex items-center justify-center shadow-lg shadow-emerald-500/5 animate-pulse`}>
+                <Smartphone className="text-emerald-500" size={32} />
+              </div>
+            </div>
+
+            {/* Strategic Title & Subtext */}
+            <div className="text-center space-y-1.5">
+              <h3 className={`text-md font-black tracking-widest ${isDark ? 'text-slate-100' : 'text-slate-950'} uppercase`}>
+                INSTALL PAD STRIKER
+              </h3>
+              <p className="text-[10px] font-mono tracking-wider text-emerald-500 uppercase font-black">
+                LOW-LATENCY OFFLINE APP
+              </p>
+              <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'} leading-relaxed font-sans pt-1`}>
+                Pin to your Home Screen for immediate full-screen launches, native hardware background latency calibration, and full offline practice sessions without data connections.
+              </p>
+            </div>
+
+            {/* Device-specific guide flow */}
+            <div className={`border rounded-xl p-3.5 space-y-3.5 ${isDark ? 'bg-slate-950 border-slate-850' : 'bg-slate-50 border-slate-200'}`}>
+              {isIOSDevice ? (
+                // iOS / Safari guidance
+                <div className="space-y-2.5">
+                  <div className={`flex items-center gap-2 text-[10px] font-mono font-bold ${isDark ? 'text-slate-400' : 'text-slate-500'} uppercase`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                    iOS Safari Setup
+                  </div>
+                  <div className={`space-y-2 text-xs ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                    <div className="flex items-start gap-2">
+                      <span className={`text-[10px] font-mono w-5 h-5 rounded flex items-center justify-center shrink-0 font-bold ${isDark ? 'bg-slate-900 border border-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>1</span>
+                      <p className="leading-tight">
+                        Tap the native <span className={`font-bold inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${isDark ? 'bg-slate-900 border border-slate-800 text-slate-100' : 'bg-slate-200 text-slate-800'}`}><Share size={9} /> Share</span> icon at the bottom.
+                      </p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className={`text-[10px] font-mono w-5 h-5 rounded flex items-center justify-center shrink-0 font-bold ${isDark ? 'bg-slate-900 border border-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>2</span>
+                      <p className="leading-tight">
+                        Scroll down the menu and choose <span className={`font-bold ${isDark ? 'text-slate-100' : 'text-slate-900'} font-sans`}>"Add to Home Screen"</span>.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                // Android, Chrome, Edge or other browser automated trigger
+                <div className="space-y-2.5">
+                  <div className={`flex items-center gap-2 text-[10px] font-mono font-bold ${isDark ? 'text-slate-400' : 'text-slate-500'} uppercase`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                    Instant Installation
+                  </div>
+                  <p className={`text-[11px] font-sans ${isDark ? 'text-slate-305 text-slate-300' : 'text-slate-600'} leading-normal`}>
+                    Secure hardware trust layers detected. Get full performance by running outside your browser bar limits.
+                  </p>
+                  
+                  {deferredPrompt ? (
+                    <button
+                      onClick={handleInstallApp}
+                      className="w-full bg-emerald-500 hover:bg-emerald-405 text-slate-950 py-2.5 rounded-xl text-[10px] font-black font-mono tracking-widest uppercase transition-all flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                    >
+                      <Download size={11} />
+                      INSTALL DIRECTLY NOW
+                    </button>
+                  ) : (
+                    <div className={`space-y-2 text-xs ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                      <div className="flex items-start gap-2">
+                        <span className={`text-[10px] font-mono w-5 h-5 rounded flex items-center justify-center shrink-0 font-bold ${isDark ? 'bg-slate-900 border border-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>1</span>
+                        <p className="leading-tight">
+                          Open the browser menu <span className="font-bold">⋮</span> (three dots / settings).
+                        </p>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={`text-[10px] font-mono w-5 h-5 rounded flex items-center justify-center shrink-0 font-bold ${isDark ? 'bg-slate-900 border border-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>2</span>
+                        <p className="leading-tight">
+                          Select <span className={`font-bold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>"Install app"</span> or <span className={`font-bold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>"Add to Home screen"</span>.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Quick choice action list */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleDismissPWA}
+                className={`flex-1 py-2.5 rounded-xl text-[9px] font-black font-mono tracking-widest uppercase transition-all text-center cursor-pointer ${
+                  isDark 
+                    ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700' 
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-800'
+                }`}
+              >
+                Use Web Version
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* HEADER BAR */}
-      <header className="border-b border-slate-900 bg-slate-950/80 backdrop-blur-md px-4 py-3 sticky top-0 z-40">
+      <header className={`border-b ${isDark ? 'border-slate-900 bg-slate-950/80 text-slate-100' : 'border-slate-200 bg-white/80 text-slate-900'} backdrop-blur-md px-4 py-3 sticky top-0 z-40 transition-colors`}>
         <div className="max-w-md mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-2">
-            <span className="p-1 rounded bg-slate-900 border border-slate-800 flex items-center justify-center">
-              <Activity size={14} className="text-emerald-400" />
+            <span className={`p-1 rounded ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'} flex items-center justify-center`}>
+              <Activity size={14} className="text-emerald-500" />
             </span>
             <div>
-              <h1 className="text-xs font-black tracking-widest text-slate-100 uppercase">
+              <h1 className={`text-xs font-black tracking-widest ${isDark ? 'text-slate-100' : 'text-slate-950'} uppercase`}>
                 PAD STRIKER
               </h1>
-              <p className="text-[8px] font-mono tracking-widest text-slate-500 font-bold">LOW LATENCY OFFLINE CADENCE</p>
+              <p className={`text-[8px] font-mono tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'} font-bold`}>LOW LATENCY OFFLINE CADENCE</p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-1.5">
+          <div className="flex items-center space-x-1.5 animate-fade-in">
+            {/* Theme Toggle Button */}
+            <button
+              onClick={() => {
+                const nextTheme = theme === 'dark' ? 'light' : 'dark';
+                setTheme(nextTheme);
+                triggerTickTone(650, 0.04);
+              }}
+              className={`p-1.5 rounded-full border transition-all cursor-pointer flex items-center justify-center ${
+                isDark 
+                  ? 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white' 
+                  : 'border-slate-250 bg-slate-100/80 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+              title={`Switch to ${isDark ? 'Light' : 'Dark'} Theme`}
+            >
+              {isDark ? <Sun size={11} /> : <Moon size={11} />}
+            </button>
+
+            {!showPWABanner && (
+              <button 
+                onClick={() => {
+                  setShowPWABanner(true);
+                  triggerTickTone(540, 0.05);
+                }}
+                className={`flex items-center gap-1 text-[9px] uppercase font-mono text-emerald-500 bg-emerald-500/5 hover:bg-emerald-500/10 border ${isDark ? 'border-emerald-500/20' : 'border-emerald-500/35'} px-2 py-0.5 rounded-full font-bold transition-all cursor-pointer select-none`}
+              >
+                <Download size={10} />
+                PWA
+              </button>
+            )}
+
             {micState === 'active' ? (
-              <span className="flex items-center gap-1 text-[9px] uppercase font-mono text-emerald-400 bg-emerald-500/5 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
-                <span className="w-1 h-1 rounded-full bg-emerald-400 animate-ping" />
-                DSPs ONLINE
+              <span className={`flex items-center gap-1 text-[9px] uppercase font-mono text-emerald-500 bg-emerald-500/5 border ${isDark ? 'border-emerald-500/20' : 'border-emerald-500/35'} px-2 py-0.5 rounded-full font-bold`}>
+                <span className="w-1 h-1 rounded-full bg-emerald-500 animate-ping" />
+                DSPS OK
               </span>
             ) : (
               <button 
                 onClick={startAudioEngine}
-                className="flex items-center gap-1 text-[9px] uppercase font-mono text-slate-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full font-bold hover:text-white transition-all cursor-pointer"
+                className={`flex items-center gap-1 text-[9px] uppercase font-mono ${isDark ? 'text-slate-400 bg-slate-900 border-slate-800 hover:text-white hover:border-slate-700' : 'text-slate-600 bg-slate-150/80 border-slate-250 hover:text-black hover:border-slate-350'} px-2 py-0.5 rounded-full font-bold transition-all cursor-pointer`}
               >
                 <Mic size={10} />
-                CONNECT MIC
+                CONNECT
               </button>
             )}
           </div>
@@ -662,18 +847,18 @@ export default function App() {
           <div 
             id="timing-ring-indicator"
             onClick={triggerManualHit}
-            className={`w-64 h-64 rounded-full border-4 flex flex-col justify-center items-center p-4 relative transition-all duration-300 cursor-pointer select-none ring-offset-4 ring-offset-slate-950 active:scale-95 ${
+            className={`w-64 h-64 rounded-full border-4 flex flex-col justify-center items-center p-4 relative transition-all duration-300 cursor-pointer select-none ring-offset-4 ${isDark ? 'ring-offset-slate-950' : 'ring-offset-slate-50'} active:scale-95 ${
               cadenceLock === 'locked'
-                ? 'border-emerald-400 bg-slate-950/40 shadow-[0_0_35px_rgba(52,211,153,0.15)] ring-4 ring-emerald-400/20' 
+                ? `border-emerald-400 ${isDark ? 'bg-slate-950/40' : 'bg-emerald-550/5 bg-emerald-500/5'} shadow-[0_0_35px_rgba(52,211,153,0.15)] ring-4 ring-emerald-400/20` 
                 : cadenceLock === 'drift'
-                ? 'border-rose-500 bg-slate-950/40 shadow-[0_0_35px_rgba(244,63,94,0.15)] ring-4 ring-rose-500/20' 
-                : 'border-slate-800 bg-slate-900/10 hover:border-slate-700'
+                ? `border-rose-500 ${isDark ? 'bg-slate-950/40' : 'bg-rose-500/5'} shadow-[0_0_35px_rgba(244,63,94,0.15)] ring-4 ring-rose-500/20` 
+                : `${isDark ? 'border-slate-800 bg-slate-900/10 hover:border-slate-700' : 'border-slate-250 bg-white hover:border-slate-450 shadow-xs'}`
             }`}
           >
             {/* Absolute Status Badge */}
-            <div className="absolute -top-3 px-3 py-0.5 rounded-full border text-[9px] font-mono font-black tracking-wider shadow-md bg-slate-950 border-slate-800">
+            <div className={`absolute -top-3 px-3 py-0.5 rounded-full border text-[9px] font-mono font-black tracking-wider shadow-md ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-white border-slate-200 text-slate-600'}`}>
               {cadenceLock === 'locked' ? (
-                <span className="text-emerald-400 flex items-center gap-1">
+                <span className="text-emerald-500 flex items-center gap-1">
                   <CheckCircle size={10} className="fill-emerald-500/10" /> TEMPO LOCK
                 </span>
               ) : cadenceLock === 'drift' ? (
@@ -681,43 +866,43 @@ export default function App() {
                   <AlertTriangle size={10} className="fill-rose-500/10" /> TEMPO DRIFT
                 </span>
               ) : (
-                <span className="text-slate-500">PRACTICE TARGET (TAP)</span>
+                <span className={`${isDark ? 'text-slate-500' : 'text-slate-400'}`}>PRACTICE TARGET (TAP)</span>
               )}
             </div>
 
-            <div className="text-[9px] font-mono tracking-widest text-slate-500 uppercase font-black">
+            <div className={`text-[9px] font-mono tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'} uppercase font-black`}>
               STROKES COUNTER
             </div>
             
             {/* Huge Readable Strokes Metric */}
-            <div className="text-6xl font-black font-sans leading-none text-slate-100 tracking-tighter my-1.5 transition-all">
+            <div className={`text-6xl font-black font-sans leading-none ${isDark ? 'text-slate-100' : 'text-slate-900'} tracking-tighter my-1.5 transition-all`}>
               {strokeCount}
             </div>
 
             {/* Quick Reset Counter */}
             <button
               onClick={handleReset}
-              className="px-2.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-[8px] font-mono text-slate-400 uppercase tracking-widest hover:text-white hover:border-slate-700 transition-all active:scale-90 flex items-center gap-1 shadow-sm cursor-pointer"
+              className={`px-2.5 py-0.5 rounded ${isDark ? 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700' : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-black hover:border-slate-300'} text-[8px] font-mono uppercase tracking-widest transition-all active:scale-90 flex items-center gap-1 shadow-sm cursor-pointer`}
             >
               <RefreshCw size={9} /> Reset
             </button>
 
             {/* Live Cadence reporting */}
             <div className="mt-3.5 text-center flex flex-col items-center">
-              <span className="text-[8px] font-mono tracking-widest text-slate-500 uppercase font-bold">Live Pace</span>
+              <span className={`text-[8px] font-mono tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'} uppercase font-bold`}>Live Pace</span>
               <span className={`text-lg font-black font-mono leading-none tracking-tight mt-0.5 ${
-                cadenceLock === 'locked' ? 'text-emerald-400' : cadenceLock === 'drift' ? 'text-rose-500' : 'text-slate-500'
+                cadenceLock === 'locked' ? 'text-emerald-500' : cadenceLock === 'drift' ? 'text-rose-500' : `${isDark ? 'text-slate-500' : 'text-slate-450 text-slate-400'}`
               }`}>
                 {isStroking ? `${liveSPM} SPM` : '---'}
               </span>
             </div>
 
             {/* Visual Instruction helper inside target */}
-            <p className="absolute bottom-4 font-mono text-[8px] text-slate-600 text-center select-none w-full px-4">
+            <p className={`absolute bottom-4 font-mono text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-400'} text-center select-none w-full px-4`}>
               {cadenceLock === 'locked' ? (
-                <strong className="text-emerald-400">Locked CADENCE (±{tolerance} BPM)</strong>
+                <strong className="text-emerald-500">Locked CADENCE (±{tolerance} BPM)</strong>
               ) : cadenceLock === 'drift' ? (
-                <strong className="text-rose-400">
+                <strong className="text-rose-500">
                   {liveSPM > targetBPM ? `FASTER BY +${liveSPM - targetBPM} BPM` : `SLOWER BY -${targetBPM - liveSPM} BPM`}
                 </strong>
               ) : (
@@ -729,17 +914,17 @@ export default function App() {
 
 
         {/* ZONE 2: THE METRONOME ENGINE & AUTO-CALCULATORS */}
-        <section id="zone-2-metronome-engine" className="bg-slate-900/40 p-4 border border-slate-900 rounded-2xl flex flex-col gap-3.5">
+        <section id="zone-2-metronome-engine" className={`${isDark ? 'bg-slate-900/40 border-slate-900' : 'bg-white border-slate-200'} p-4 border rounded-2xl flex flex-col gap-3.5 transition-colors duration-200`}>
           <div className="flex items-center justify-between">
-            <h2 className="text-[10px] font-black font-mono tracking-widest text-slate-400 uppercase flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            <h2 className={`text-[10px] font-black font-mono tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-500'} uppercase flex items-center gap-1`}>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               Metronome Grid
             </h2>
             <div className="flex items-center gap-1">
-              <span className="text-[8px] font-mono text-slate-500">TOLERANCE:</span>
+              <span className={`text-[8px] font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>TOLERANCE:</span>
               <button 
                 onClick={() => setTolerance(t => t === 4 ? 8 : t === 8 ? 12 : 4)}
-                className="text-[9px] font-mono font-bold text-emerald-400 hover:text-emerald-300 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded cursor-pointer select-none"
+                className={`text-[9px] font-mono font-bold text-emerald-500 hover:text-emerald-400 ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-100 border-slate-200'} px-2 py-0.5 rounded cursor-pointer select-none`}
               >
                 ±{tolerance} BPM
               </button>
@@ -750,29 +935,29 @@ export default function App() {
             {/* Decrease tempo */}
             <button 
               onClick={() => setTargetBPM(b => Math.max(30, b - 2))}
-              className="w-11 h-11 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-900 text-slate-300 flex items-center justify-center active:scale-90 transition-all cursor-pointer font-mono font-black"
+              className={`w-11 h-11 rounded-xl ${isDark ? 'bg-slate-950 border-slate-800 hover:bg-slate-900 text-slate-400' : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-650'} flex items-center justify-center active:scale-95 transition-all cursor-pointer font-mono font-black`}
             >
-              <Minus size={12} className="text-slate-500" />
+              <Minus size={12} className={`${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
             </button>
 
             {/* Clickable interactive BPM center to Tap Tempo */}
             <button
               onClick={handleTapTempo}
-              className="flex-grow bg-slate-950/70 border border-slate-850 hover:border-slate-700 rounded-xl py-2 px-4 transition-all relative group cursor-pointer text-center"
+              className={`flex-grow ${isDark ? 'bg-slate-950/70 border-slate-850 hover:border-slate-700 text-slate-100' : 'bg-slate-100/70 border-slate-200 hover:border-slate-350 text-slate-900'} rounded-xl py-2 px-4 transition-all relative group cursor-pointer text-center`}
               title="Click repeatedly to tap tempo"
             >
-              <span className="absolute top-1 right-2 text-[7px] font-mono text-slate-600 font-bold uppercase tracking-wider group-hover:text-emerald-400">TAP METRONOME</span>
-              <div className="text-2xl font-black font-sans leading-none text-slate-100 group-hover:text-emerald-400 transition-colors">
-                {targetBPM} <span className="text-xs font-mono text-slate-500 font-normal">BPM</span>
+              <span className={`absolute top-1 right-2 text-[7px] font-mono ${isDark ? 'text-slate-600' : 'text-slate-400'} font-bold uppercase tracking-wider group-hover:text-emerald-500`}>TAP METRONOME</span>
+              <div className="text-2xl font-black font-sans leading-none group-hover:text-emerald-500 transition-colors">
+                {targetBPM} <span className={`text-xs font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'} font-normal`}>BPM</span>
               </div>
             </button>
 
             {/* Increase tempo */}
             <button 
               onClick={() => setTargetBPM(b => Math.min(300, b + 2))}
-              className="w-11 h-11 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-900 text-slate-300 flex items-center justify-center active:scale-90 transition-all cursor-pointer font-mono font-black"
+              className={`w-11 h-11 rounded-xl ${isDark ? 'bg-slate-950 border-slate-800 hover:bg-slate-900 text-slate-400' : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-650'} flex items-center justify-center active:scale-95 transition-all cursor-pointer font-mono font-black`}
             >
-              <Plus size={12} className="text-emerald-500" />
+              <Plus size={12} className="text-emerald-505 text-emerald-500" />
             </button>
           </div>
 
@@ -785,7 +970,7 @@ export default function App() {
               step="1"
               value={targetBPM}
               onChange={(e) => setTargetBPM(Number(e.target.value))}
-              className="w-full h-1 bg-slate-850 roundedappearance-none cursor-pointer accent-emerald-400"
+              className={`w-full h-1 ${isDark ? 'bg-slate-850' : 'bg-slate-200'} rounded appearance-none cursor-pointer accent-emerald-500`}
             />
           </div>
 
@@ -798,8 +983,8 @@ export default function App() {
             }}
             className={`w-full py-2.5 rounded-xl font-mono text-[10px] font-black tracking-widest flex items-center justify-center gap-1.5 transition-all text-center cursor-pointer active:scale-95 border uppercase ${
               isMetronomePlaying 
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.1)]' 
-                : 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500 shadow-[0_0_12px_rgba(52,211,153,0.1)]' 
+                : `${isDark ? 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800' : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200 hover:text-black'}`
             }`}
           >
             {isMetronomePlaying ? (
@@ -818,11 +1003,11 @@ export default function App() {
 
 
         {/* ZONE 3: INTUITIVE GHOST NOTE SENSITIVITY AND ECHO FILTER PRESETS */}
-        <section id="zone-3-presets" className="bg-slate-900/40 p-4 border border-slate-900 rounded-2xl flex flex-col gap-3.5">
+        <section id="zone-3-presets" className={`${isDark ? 'bg-slate-900/40 border-slate-900' : 'bg-white border-slate-200'} p-4 border rounded-2xl flex flex-col gap-3.5 transition-colors duration-200`}>
           
           {/* Header row */}
           <div className="flex items-center justify-between">
-            <h2 className="text-[10px] font-black font-mono tracking-widest text-slate-400 uppercase">
+            <h2 className={`text-[10px] font-black font-mono tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-500'} uppercase`}>
               Sensitivity & Noise Filters
             </h2>
             <button
@@ -830,8 +1015,8 @@ export default function App() {
               disabled={isCalibrating}
               className={`px-3 py-1 text-[9px] font-mono font-black rounded-lg transition-all border flex items-center gap-1 cursor-pointer select-none active:scale-[0.93] ${
                 isCalibrating
-                  ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
-                  : 'bg-rose-500/10 border-rose-500/20 text-rose-400 hover:bg-rose-500/15'
+                  ? `${isDark ? 'bg-slate-805 text-slate-555' : 'bg-slate-200 text-slate-400'} border-transparent cursor-not-allowed`
+                  : 'bg-rose-500/10 border-rose-500/20 text-rose-500 hover:bg-rose-500/15'
               }`}
             >
               <Sparkles size={9} />
@@ -841,11 +1026,11 @@ export default function App() {
 
           {/* Automatic Noise calibrating overlay */}
           {isCalibrating && (
-            <div className="bg-rose-500/5 border border-rose-500/10 rounded-xl p-3 text-center space-y-1.5 animate-pulse">
-              <p className="text-[9px] font-mono text-rose-400 font-bold uppercase tracking-wide">
+            <div className={`bg-rose-500/5 border ${isDark ? 'border-rose-500/10' : 'border-rose-500/20'} rounded-xl p-3 text-center space-y-1.5 animate-pulse`}>
+              <p className="text-[9px] font-mono text-rose-455 text-rose-500 font-bold uppercase tracking-wide">
                 Analyzing Room Ambiance: DO NOT STRIKE THE PAD
               </p>
-              <div className="h-1 bg-slate-950 rounded overflow-hidden max-w-xs mx-auto border border-slate-900">
+              <div className={`h-1 ${isDark ? 'bg-slate-950 border-slate-900' : 'bg-slate-150 border-slate-200'} rounded overflow-hidden max-w-xs mx-auto border`}>
                 <div className="h-full bg-rose-500" style={{ width: `${(calibrationSecondsLeft / 2) * 100}%` }} />
               </div>
             </div>
@@ -853,7 +1038,7 @@ export default function App() {
 
           {/* Preset Buttons for Ghost Note Sensitivity */}
           <div className="space-y-1.5">
-            <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-widest block">
+            <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-widest block`}>
               Ghost Note Sensitivity
             </span>
             <div className="grid grid-cols-3 gap-2">
@@ -861,8 +1046,8 @@ export default function App() {
                 onClick={() => setGhostNoteSetting('ghost')}
                 className={`py-2 rounded-xl text-[10px] border transition-all text-center cursor-pointer font-mono font-bold leading-tight ${
                   ghostNoteSetting === 'ghost'
-                    ? 'border-emerald-400 bg-emerald-500/5 text-slate-100 font-black'
-                    : 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800'
+                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
+                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150 hover:text-black'}`
                 }`}
               >
                 🤫 SOFT PAD
@@ -871,8 +1056,8 @@ export default function App() {
                 onClick={() => setGhostNoteSetting('standard')}
                 className={`py-2 rounded-xl text-[10px] border transition-all text-center cursor-pointer font-mono font-bold leading-tight ${
                   ghostNoteSetting === 'standard'
-                    ? 'border-emerald-400 bg-emerald-500/5 text-slate-100 font-black'
-                    : 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800'
+                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
+                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150 hover:text-black'}`
                 }`}
               >
                 🥁 STANDARD
@@ -881,15 +1066,15 @@ export default function App() {
                 onClick={() => setGhostNoteSetting('noisy')}
                 className={`py-2 rounded-xl text-[10px] border transition-all text-center cursor-pointer font-mono font-bold leading-tight ${
                   ghostNoteSetting === 'noisy'
-                    ? 'border-emerald-400 bg-emerald-500/5 text-slate-100 font-black'
-                    : 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800'
+                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
+                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150 hover:text-black'}`
                 }`}
               >
                 💨 LOUD ROOM
               </button>
             </div>
             {ghostNoteSetting === 'calibrated' && (
-              <p className="text-[8px] font-mono text-emerald-400 bg-emerald-500/5 border border-emerald-500/10 px-2 py-1 rounded-lg text-center font-bold">
+              <p className={`text-[8px] font-mono text-emerald-500 ${isDark ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-emerald-500/10 border-emerald-500/25'} px-2 py-1 rounded-lg text-center font-bold`}>
                 🔒 Custom Calibrated state is active (Multiplier: {calibratedThresholdApplied.toFixed(1)}x)
               </p>
             )}
@@ -897,7 +1082,7 @@ export default function App() {
 
           {/* Secondary Echo Filter Lockout Preset */}
           <div className="space-y-1.5">
-            <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-widest block">
+            <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-widest block`}>
               Echo Filter Lockout
             </span>
             <div className="grid grid-cols-2 gap-2">
@@ -905,23 +1090,23 @@ export default function App() {
                 onClick={() => setEchoFilterMode('standard')}
                 className={`py-2 px-2.5 rounded-xl border text-[10px] font-mono leading-tight text-center transition-all cursor-pointer font-bold ${
                   echoFilterMode === 'standard'
-                    ? 'border-emerald-400 bg-emerald-500/5 text-slate-100 font-black'
-                    : 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800'
+                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
+                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150'}`
                 }`}
               >
                 <div>🥁 Standard Accents</div>
-                <div className="text-[7.5px] text-slate-500 mt-0.5 uppercase tracking-wide">Auto BPM Guard</div>
+                <div className={`text-[7.5px] ${isDark ? 'text-slate-500' : 'text-slate-450 text-slate-400'} mt-0.5 uppercase tracking-wide`}>Auto BPM Guard</div>
               </button>
               <button
                 onClick={() => setEchoFilterMode('fast')}
                 className={`py-2 px-2.5 rounded-xl border text-[10px] font-mono leading-tight text-center transition-all cursor-pointer font-bold ${
                   echoFilterMode === 'fast'
-                    ? 'border-emerald-400 bg-emerald-500/5 text-slate-100 font-black'
-                    : 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800'
+                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
+                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150'}`
                 }`}
               >
                 <div>⚡ Lightning Rolls</div>
-                <div className="text-[7.5px] text-slate-500 mt-0.5 uppercase tracking-wide">Locked 12ms filter</div>
+                <div className={`text-[7.5px] ${isDark ? 'text-slate-500' : 'text-slate-455 text-slate-400'} mt-0.5 uppercase tracking-wide`}>Locked 12ms filter</div>
               </button>
             </div>
           </div>
@@ -929,69 +1114,69 @@ export default function App() {
 
 
         {/* ACCORDION COLLAPSIBLE DRAWER: ADVANCED AUDIO DIAGNOSTICS */}
-        <section id="advanced-diagnostics-drawer" className="border border-slate-900 bg-slate-950/70 rounded-2xl overflow-hidden shadow-sm">
+        <section id="advanced-diagnostics-drawer" className={`border ${isDark ? 'border-slate-900 bg-slate-950/70' : 'border-slate-200 bg-white shadow-xs'} rounded-2xl overflow-hidden`}>
           <button
             onClick={() => setShowDiagnostics(!showDiagnostics)}
-            className="w-full px-4 py-3 flex items-center justify-between text-[10px] font-mono font-black text-slate-400 bg-slate-950 hover:bg-slate-900 transition-colors cursor-pointer select-none border-b border-transparent"
+            className={`w-full px-4 py-3 flex items-center justify-between text-[10px] font-mono font-black ${isDark ? 'text-slate-400 bg-slate-950 hover:bg-slate-900 border-slate-900' : 'text-slate-600 bg-slate-50 hover:bg-slate-100 border-slate-200'} transition-colors cursor-pointer select-none border-b`}
           >
             <span className="flex items-center gap-1.5">
-              <SlidersHorizontal size={11} className="text-emerald-400" />
+              <SlidersHorizontal size={11} className="text-emerald-500" />
               ADVANCED AUDIO DIAGNOSTICS
             </span>
-            <span className="text-[9px] text-slate-600 font-bold">{showDiagnostics ? 'COLLAPSE ▲' : 'EXPAND VIEW ▼'}</span>
+            <span className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'} font-bold`}>{showDiagnostics ? 'COLLAPSE ▲' : 'EXPAND VIEW ▼'}</span>
           </button>
 
           {showDiagnostics && (
-            <div className="p-4 bg-slate-950 border-t border-slate-900 space-y-4 text-xs font-mono">
+            <div className={`p-4 ${isDark ? 'bg-slate-950 border-slate-900 text-slate-100' : 'bg-white border-slate-200 text-slate-800'} border-t space-y-4 text-xs font-mono transition-colors`}>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
-                  <span className="text-slate-500 text-[9px] block">ECHO FILTER DELAY</span>
-                  <div className="text-sm font-bold text-slate-100">
+                  <span className={`${isDark ? 'text-slate-500' : 'text-slate-405 text-slate-400'} text-[9px] block`}>ECHO FILTER DELAY</span>
+                  <div className={`text-sm font-bold ${isDark ? 'text-slate-100' : 'text-slate-955 text-slate-900'}`}>
                     {getEchoFilterMs()} ms
                   </div>
-                  <p className="text-[8px] text-slate-600 leading-snug">
+                  <p className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-450 text-slate-400'} leading-snug`}>
                     Double trigger lockout gate calculated from target {targetBPM} BPM.
                   </p>
                 </div>
 
                 <div className="space-y-1">
-                  <span className="text-slate-500 text-[9px] block">GHOST LIMIT MULTIPLIER</span>
-                  <div className="text-sm font-bold text-slate-100">
+                  <span className={`${isDark ? 'text-slate-500' : 'text-slate-405 text-slate-400'} text-[9px] block`}>GHOST LIMIT MULTIPLIER</span>
+                  <div className={`text-sm font-bold ${isDark ? 'text-slate-100' : 'text-slate-955 text-slate-900'}`}>
                     {getSensitivityMultiplier().toFixed(1)}x
                   </div>
-                  <p className="text-[8px] text-slate-600 leading-snug">
+                  <p className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-450 text-slate-400'} leading-snug`}>
                     Constant multiplier against background floor level.
                   </p>
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-900 space-y-1.5">
+              <div className={`pt-3 border-t ${isDark ? 'border-slate-900' : 'border-slate-205 border-slate-200'} space-y-1.5`}>
                 <div className="flex justify-between items-center text-[9px]">
-                  <span className="text-slate-500">BIQUAD HIGHPASS CUTOFF</span>
-                  <span className="text-slate-100 font-bold">900 Hz</span>
+                  <span className={`${isDark ? 'text-slate-500' : 'text-slate-405 text-slate-400'}`}>BIQUAD HIGHPASS CUTOFF</span>
+                  <span className={`font-bold ${isDark ? 'text-slate-100' : 'text-slate-950'}`}>900 Hz</span>
                 </div>
-                <div className="h-1 bg-slate-900 rounded overflow-hidden">
-                  <div className="h-full bg-emerald-400/40 w-[45%]" />
+                <div className={`h-1 ${isDark ? 'bg-slate-900' : 'bg-slate-100'} rounded overflow-hidden`}>
+                  <div className="h-full bg-emerald-500/40 w-[45%]" />
                 </div>
-                <span className="text-[8px] text-slate-600 block">
+                <span className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-450 text-slate-400'} block`}>
                   Hard cut filtering out low AC drafts or background talk hums. High pitch stick click hits are preserved locktight.
                 </span>
               </div>
 
-              <div className="pt-3 border-t border-slate-900 space-y-1.5">
+              <div className={`pt-3 border-t ${isDark ? 'border-slate-900' : 'border-slate-205 border-slate-200'} space-y-1.5`}>
                 <div className="flex justify-between text-[10px] font-bold">
-                  <span className="text-slate-400">Manual Tolerance Adjuster</span>
-                  <span className="text-emerald-400">±{tolerance} BPM</span>
+                  <span className={`${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Manual Tolerance Adjuster</span>
+                  <span className="text-emerald-505 text-emerald-500">±{tolerance} BPM</span>
                 </div>
-                <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg">
+                <div className={`flex items-center gap-1 ${isDark ? 'bg-slate-900/50' : 'bg-slate-100'} p-1 rounded-lg`}>
                   {[2, 4, 6, 8, 12, 16].map((it) => (
                     <button
                       key={it}
                       onClick={() => setTolerance(it)}
                       className={`flex-1 py-1 rounded text-[9px] transition-all cursor-pointer font-bold ${
                         tolerance === it 
-                          ? 'bg-slate-800 border border-slate-700 text-emerald-400' 
-                          : 'text-slate-500 hover:text-white'
+                          ? `${isDark ? 'bg-slate-800 border-slate-700 text-emerald-400' : 'bg-white border border-slate-205 text-emerald-600 shadow-xs'}` 
+                          : `${isDark ? 'text-slate-500 hover:text-white' : 'text-slate-400 hover:text-slate-900'}`
                       }`}
                     >
                       ±{it}
@@ -1005,15 +1190,15 @@ export default function App() {
 
         {/* CONNECT CTA INACTIVE BANNER */}
         {!isEngineReady && (
-          <div className="bg-slate-900/40 border border-dashed border-slate-800 p-4 rounded-2xl text-center space-y-2">
-            <Mic className="mx-auto text-emerald-400 animate-bounce" size={20} />
-            <h4 className="font-bold text-xs text-slate-100 uppercase tracking-widest">Connect Mic Capture</h4>
-            <p className="text-[9px] text-slate-500 max-w-xs mx-auto leading-relaxed font-mono">
+          <div className={`${isDark ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200 shadow-xs'} border border-dashed p-4 rounded-2xl text-center space-y-2 transition-colors`}>
+            <Mic className="mx-auto text-emerald-500 animate-bounce" size={20} />
+            <h4 className={`font-bold text-xs ${isDark ? 'text-slate-100' : 'text-slate-900'} uppercase tracking-widest`}>Connect Mic Capture</h4>
+            <p className={`text-[9px] ${isDark ? 'text-slate-500' : 'text-slate-400'} max-w-xs mx-auto leading-relaxed font-mono`}>
               Initialize our standard thread-isolated AudioWorklet DSP pipeline to track physical pad actions.
             </p>
             <button
               onClick={startAudioEngine}
-              className="px-4 py-1.5 rounded-xl font-mono text-[10px] font-black text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-95 transition-all shadow-md cursor-pointer uppercase tracking-wider"
+              className="px-4 py-1.5 rounded-xl font-mono text-[10px] font-black text-slate-950 bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all shadow-md cursor-pointer uppercase tracking-wider"
             >
               Start Acoustic Stream
             </button>
@@ -1023,29 +1208,29 @@ export default function App() {
       </main>
 
       {/* FOOTER METRIC CONTROLLER ACTIONS */}
-      <footer className="max-w-md mx-auto w-full px-4 border-t border-slate-900 py-3.5 flex items-center justify-between font-mono text-[8px] text-slate-500 z-10 bg-slate-950/40">
+      <footer className={`max-w-md mx-auto w-full px-4 border-t ${isDark ? 'border-slate-900 bg-slate-950/40 text-slate-500' : 'border-slate-200 bg-slate-100/40 text-slate-500'} py-3.5 flex items-center justify-between font-mono text-[8px] z-10`}>
         <div>
           <span>Target Metronome: {targetBPM} BPM</span>
         </div>
         <div className="flex items-center gap-3">
           <button 
             onClick={() => handleReset()}
-            className="hover:text-rose-400 flex items-center gap-1 transition-all cursor-pointer font-black"
+            className="hover:text-rose-500 flex items-center gap-1 transition-all cursor-pointer font-black"
           >
             <RefreshCw size={9} /> RESET STATS
           </button>
-          <span className="text-slate-800 font-bold">//</span>
+          <span className={`${isDark ? 'text-slate-800' : 'text-slate-300'} font-bold`}>//</span>
           {isEngineReady ? (
             <button 
               onClick={cleanupAudio}
-              className="text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-all cursor-pointer font-black"
+              className="text-rose-500 hover:text-rose-600 flex items-center gap-1 transition-all cursor-pointer font-black"
             >
               <MicOff size={9} /> DISCONNECT MIC
             </button>
           ) : (
             <button 
               onClick={startAudioEngine}
-              className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-all cursor-pointer font-black"
+              className="text-emerald-500 hover:text-emerald-600 flex items-center gap-1 transition-all cursor-pointer font-black"
             >
               <Mic size={9} /> CONNECT MIC
             </button>
