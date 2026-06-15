@@ -3,34 +3,20 @@
 class StrokeProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.lastMag = null;
-    this.cooldownSamples = 0;
+    this.historyBuffer = new Float32Array(512); // Short memory for lookahead transient checking
+    this.bufferIndex = 0;
+    this.noiseFloor = 0.0005;
+    this.smoothingFactor = 0.995;
+    this.debounceTimer = 0;
     
-    // Auto-tuning states
-    this.adaptiveNoiseFloor = 0.005;
-    this.autoMode = true; // default: fully automated self-tuning
-    this.ghostNotesEnabled = false; 
-    this.targetBpm = 60; 
-    
-    // Manual fallbacks
-    this.ghostNoteSensitivity = 2.8; 
-    this.echoFilterMs = 25;   
-    
-    // Metronome tick gate registry
+    // Default fallback values
+    this.ghostNoteSensitivity = 0.5;
+    this.echoFilterMs = 24;
     this.metronomeTicks = [];
-    
-    // Listen for real-time adjustments or mode toggles from React UI
+
+    // Listen for messages from React thread
     this.port.onmessage = (event) => {
       if (event.data.type === 'UPDATE_SETTINGS') {
-        if (typeof event.data.autoMode === 'boolean') {
-          this.autoMode = event.data.autoMode;
-        }
-        if (typeof event.data.ghostNotesEnabled === 'boolean') {
-          this.ghostNotesEnabled = event.data.ghostNotesEnabled;
-        }
-        if (typeof event.data.targetBpm === 'number') {
-          this.targetBpm = event.data.targetBpm;
-        }
         if (typeof event.data.ghostNoteSensitivity === 'number') {
           this.ghostNoteSensitivity = event.data.ghostNoteSensitivity;
         }
@@ -49,55 +35,63 @@ class StrokeProcessor extends AudioWorkletProcessor {
     };
   }
 
+  static get parameterDescriptors() {
+    return [{
+      name: 'ghostNoteSensitivity',
+      defaultValue: 0.5,
+      minValue: 0.01,
+      maxValue: 1.0
+    }];
+  }
+
   process(inputs, outputs, parameters) {
     const input = inputs[0];
     if (!input || input.length === 0) return true;
+    const channel = input[0];
 
-    const channel = input[0]; // Mono input channel
-    const bufferSize = channel.length;
-
-    // 1. ECHO FILTER BLOCK TIMING (Using actual physical samples processed)
-    if (this.cooldownSamples > 0) {
-      this.cooldownSamples -= bufferSize;
-    }
-
-    // 2. Calculate Root Mean Square (RMS) of the current block
-    let frameRMS = 0;
-    for (let i = 0; i < bufferSize; i++) {
-      frameRMS += channel[i] * channel[i];
-    }
-    frameRMS = Math.sqrt(frameRMS / bufferSize);
-
-    if (this.lastMag === null) {
-      this.lastMag = frameRMS;
-      return true;
-    }
-
-    // 3. Compute Transient Flux (The sudden positive rise velocity in energy)
-    const flux = frameRMS - this.lastMag;
-    this.lastMag = frameRMS;
-
-    // 4. GHOST NOTE SENSITIVITY AUTOMATION (Adaptive Noise Floor Tracking with Quiescent Gate)
-    // Tracks background environmental noise steadily (slow smoothing factor to ignore transient peak outliers)
-    const smoothingFactor = 0.995;
-    if (frameRMS < this.adaptiveNoiseFloor * 2.0) {
-      this.adaptiveNoiseFloor = (this.adaptiveNoiseFloor * smoothingFactor) + (frameRMS * (1 - smoothingFactor));
-    }
-    // Safe bounds
-    this.adaptiveNoiseFloor = Math.max(0.0015, Math.min(0.08, this.adaptiveNoiseFloor));
-
-    // Determine current audio context time (in seconds)
+    // Determine sample rate and current context time (in seconds)
+    const sampleRateHz = typeof sampleRate !== 'undefined' ? sampleRate : 44100;
     const curTimeSec = typeof currentTime !== 'undefined' ? currentTime : 0;
+
+    // Use either the AudioParam or the direct message setting
+    let sensitivitySetting = this.ghostNoteSensitivity;
+    if (parameters.ghostNoteSensitivity && parameters.ghostNoteSensitivity.length > 0) {
+      sensitivitySetting = parameters.ghostNoteSensitivity[0];
+    }
+
+    // 1. Calculate Block RMS and track peak variations
+    let frameRMS = 0;
+    let peakValue = 0;
+    for (let i = 0; i < channel.length; i++) {
+      const sample = channel[i];
+      frameRMS += sample * sample;
+      const absSample = Math.abs(sample);
+      if (absSample > peakValue) peakValue = absSample;
+      
+      // Save samples into history for lookahead transient checking if needed
+      this.historyBuffer[this.bufferIndex] = sample;
+      this.bufferIndex = (this.bufferIndex + 1) % this.historyBuffer.length;
+    }
+    frameRMS = Math.sqrt(frameRMS / channel.length);
+
+    // 2. Continuous environmental room noise calibration
+    if (frameRMS < this.noiseFloor * 2.0) {
+      this.noiseFloor = (this.noiseFloor * this.smoothingFactor) + (frameRMS * (1.0 - this.smoothingFactor));
+    }
+    // Set a baseline minimum floor to avoid divide-by-zero or over-sensitivity in dead silent rooms
+    this.noiseFloor = Math.max(0.0001, this.noiseFloor);
+
+    if (this.debounceTimer > 0) {
+      this.debounceTimer -= channel.length;
+    }
 
     // Check if within any scheduled metronome tick window
     let inMetronomeGating = false;
     if (this.metronomeTicks && this.metronomeTicks.length > 0) {
-      // Clean up past ticks (duration + padding of 0.2s)
       this.metronomeTicks = this.metronomeTicks.filter(tick => curTimeSec < tick.time + tick.duration + 0.2);
       
       for (let i = 0; i < this.metronomeTicks.length; i++) {
         const tick = this.metronomeTicks[i];
-        // Check if we are inside the tick window
         if (curTimeSec >= tick.time - 0.02 && curTimeSec <= tick.time + tick.duration) {
           inMetronomeGating = true;
           break;
@@ -105,37 +99,56 @@ class StrokeProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // 5. EVALUATE TRANSIENT HIT
-    if (this.cooldownSamples <= 0 && flux > 0) {
-      // Calculate dynamic sensitivity threshold based on adaptive floor and sensitivity setting
-      let threshold = Math.max(this.adaptiveNoiseFloor * this.ghostNoteSensitivity, 0.0035);
-      let usedEchoFilterMs = this.echoFilterMs;
+    // 3. Mathematical Base Threshold (Lighter slider = lower threshold floor)
+    let dynamicThreshold = this.noiseFloor * (1.2 + (sensitivitySetting * 10.0));
 
-      // Metronome Attenuator: If the metronome plays, the threshold/gate is momentarily pushed up 
-      // only for that micro-window, then drops back down instantly to catch soft hits.
-      if (inMetronomeGating) {
-        threshold = threshold * 5.0; // Spike transient requirement 5x during clicking to absorb speaker bleed
+    // Metronome Attenuator: Pushes target threshold momentarily up only during tick window
+    if (inMetronomeGating) {
+      dynamicThreshold = dynamicThreshold * 4.0;
+    }
+
+    // 4. THE NOISE CANCELLATION CLASSIFIER (Isolates stick snaps)
+    if (frameRMS > dynamicThreshold && this.debounceTimer <= 0) {
+      
+      // A. Crest Factor Check (Measures the "peakiness" of the wave)
+      // Voices/blowing air are dense (low crest factor). Stick hits are sharp spikes (high crest factor).
+      const crestFactor = frameRMS > 0 ? (peakValue / frameRMS) : 0;
+
+      // B. Attack Velocity Rise-Time Check
+      // We look back at recent sub-chunks to see how fast the energy exploded.
+      let halfLength = Math.floor(channel.length / 2);
+      let earlyRMS = 0;
+      let lateRMS = 0;
+      
+      for (let i = 0; i < halfLength; i++) {
+        earlyRMS += channel[i] * channel[i];
+        lateRMS += channel[i + halfLength] * channel[i + halfLength];
       }
+      
+      // Calculate how much the volume multiplied in just 1.5 milliseconds
+      const growthRatio = earlyRMS > 0 ? (lateRMS / earlyRMS) : 10;
 
-      // Check peak rise against computed threshold - use dynamic fallback for soft strokes
-      let minMagAllowed = Math.max(0.003, this.adaptiveNoiseFloor * 1.05);
-      if (inMetronomeGating) {
-        minMagAllowed = minMagAllowed * 4.0; // Raise overall magnitude floor as well during feedback window
-      }
+      // C. THE VETO FILTERING CRITERIA
+      // Stick hits have a massive Crest Factor (> 3.5) and a blindingly fast rise speed (> 2.5)
+      // We allow a slightly lower Crest Factor threshold during high sensitivity settings to retain arm's-length responsiveness
+      const minCrestRequired = sensitivitySetting < 0.2 ? 3.0 : 3.5;
+      const minGrowthRequired = sensitivitySetting < 0.2 ? 2.0 : 2.5;
 
-      if (flux > threshold && frameRMS > minMagAllowed) {
-        // Trigger hit event back to the React scheduler thread
-        const eventTime = typeof currentTime !== 'undefined' ? currentTime : (Date.now() / 1000);
-        this.port.postMessage({ 
-          type: 'STROKE_DETECTED', 
-          timestamp: eventTime,
-          autoEchoFilterApplied: usedEchoFilterMs,
-          autoThresholdApplied: threshold
+      const isSharpImpact = crestFactor > minCrestRequired && growthRatio > minGrowthRequired;
+      
+      // Voices have a Crest Factor < 3.0 and build up gradually (growthRatio < 1.8)
+      const isVoiceOrBlowing = crestFactor < 3.0 || growthRatio < 1.8;
+
+      if (isSharpImpact && !isVoiceOrBlowing && frameRMS > this.noiseFloor) {
+        this.port.postMessage({
+          type: 'STROKE_DETECTED',
+          timestamp: curTimeSec,
+          intensity: frameRMS
         });
         
-        // Lock out the microphone cleanly to separate strokes (derived debounce / cooldown lockout)
-        const sampleRateHz = typeof sampleRate !== 'undefined' ? sampleRate : 44100;
-        this.cooldownSamples = (usedEchoFilterMs / 1000) * sampleRateHz;
+        // Lock out frame evaluations for a custom lockout window (based on ms or default 24ms)
+        const lockoutMs = this.echoFilterMs || 24;
+        this.debounceTimer = (lockoutMs / 1000) * sampleRateHz; 
       }
     }
 

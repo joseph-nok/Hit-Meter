@@ -91,7 +91,7 @@ export default function App() {
   // A low strike value corresponds to highly sensitive (low threshold).
   // A high strike value corresponds to less sensitive (high threshold).
   const getSensitivityMultiplier = () => {
-    return 0.5 + (strike / 100) * 7.5;
+    return 0.01 + ((strike - 1) / 99) * 0.99;
   };
 
   // Auto-calculated Echo Filter (debounce) timing: 60000 / (BPM * 4) * 0.4
@@ -620,20 +620,24 @@ export default function App() {
         let mappedTightness = 2.8;
         let mappedSetting: typeof ghostNoteSetting = 'standard';
 
+        let targetStrike = 30;
         if (noiseFloor < 30) {
           mappedTightness = 1.8;
           mappedSetting = 'ghost';
+          targetStrike = 15;
         } else if (noiseFloor < 80) {
           mappedTightness = 2.8;
           mappedSetting = 'standard';
+          targetStrike = 30;
         } else {
           mappedTightness = 4.5;
           mappedSetting = 'noisy';
+          targetStrike = 60;
         }
 
         setCalibratedThresholdApplied(mappedTightness);
         setGhostNoteSetting('calibrated');
-        setStrike(Math.max(1, Math.min(100, Math.round(((mappedTightness - 0.5) / 7.5) * 100))));
+        setStrike(targetStrike);
 
         // Confirming beep
         triggerTickTone(1200, 0.08);
