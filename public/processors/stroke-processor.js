@@ -7,14 +7,17 @@ class StrokeProcessor extends AudioWorkletProcessor {
     this.cooldownSamples = 0;
     
     // Auto-tuning states
-    this.adaptiveNoiseFloor = 0.015;
+    this.adaptiveNoiseFloor = 0.005;
     this.autoMode = true; // default: fully automated self-tuning
-    this.ghostNotesEnabled = false; // default: false (multiplier is 2.5x to prevent talk/fan slop; true means 1.5x)
-    this.targetBpm = 60; // used to compute auto echo filter
+    this.ghostNotesEnabled = false; 
+    this.targetBpm = 60; 
     
     // Manual fallbacks
     this.ghostNoteSensitivity = 2.8; 
     this.echoFilterMs = 25;   
+    
+    // Metronome tick gate registry
+    this.metronomeTicks = [];
     
     // Listen for real-time adjustments or mode toggles from React UI
     this.port.onmessage = (event) => {
@@ -34,6 +37,14 @@ class StrokeProcessor extends AudioWorkletProcessor {
         if (typeof event.data.echoFilterMs === 'number') {
           this.echoFilterMs = event.data.echoFilterMs;
         }
+      } else if (event.data.type === 'METRONOME_TICK') {
+        this.metronomeTicks.push({
+          time: event.data.time,
+          duration: event.data.duration || 0.12
+        });
+        if (this.metronomeTicks.length > 30) {
+          this.metronomeTicks.shift();
+        }
       }
     };
   }
@@ -50,58 +61,69 @@ class StrokeProcessor extends AudioWorkletProcessor {
       this.cooldownSamples -= bufferSize;
     }
 
-    // 2. Calculate Mean Absolute Value (Energy) of the current block
-    let currentMag = 0;
+    // 2. Calculate Root Mean Square (RMS) of the current block
+    let frameRMS = 0;
     for (let i = 0; i < bufferSize; i++) {
-      currentMag += Math.abs(channel[i]);
+      frameRMS += channel[i] * channel[i];
     }
-    currentMag /= bufferSize;
+    frameRMS = Math.sqrt(frameRMS / bufferSize);
 
     if (this.lastMag === null) {
-      this.lastMag = currentMag;
+      this.lastMag = frameRMS;
       return true;
     }
 
     // 3. Compute Transient Flux (The sudden positive rise velocity in energy)
-    const flux = currentMag - this.lastMag;
-    this.lastMag = currentMag;
+    const flux = frameRMS - this.lastMag;
+    this.lastMag = frameRMS;
 
     // 4. GHOST NOTE SENSITIVITY AUTOMATION (Adaptive Noise Floor Tracking with Quiescent Gate)
-    // We only adapt and drift the noise floor up when the signal is relatively stable (low flux).
-    // This blocks recurring drum strokes from artificially desensitizing the sensor.
-    const isSteady = Math.abs(flux) < 0.003;
-    if (isSteady) {
-      this.adaptiveNoiseFloor = this.adaptiveNoiseFloor * 0.992 + currentMag * 0.008;
-    } else {
-      // If quiet but unsteady, we can still drift down slowly to recover sensitivity
-      if (currentMag < this.adaptiveNoiseFloor) {
-        this.adaptiveNoiseFloor = this.adaptiveNoiseFloor * 0.996 + currentMag * 0.004;
-      }
+    // Tracks background environmental noise steadily (slow smoothing factor to ignore transient peak outliers)
+    const smoothingFactor = 0.995;
+    if (frameRMS < this.adaptiveNoiseFloor * 2.0) {
+      this.adaptiveNoiseFloor = (this.adaptiveNoiseFloor * smoothingFactor) + (frameRMS * (1 - smoothingFactor));
     }
     // Safe bounds
-    this.adaptiveNoiseFloor = Math.max(0.002, Math.min(0.08, this.adaptiveNoiseFloor));
+    this.adaptiveNoiseFloor = Math.max(0.0015, Math.min(0.08, this.adaptiveNoiseFloor));
 
-    // 5. EVALUATE TRANSIENT HIT WITH SELF-TUNED ENGINES
+    // Determine current audio context time (in seconds)
+    const curTimeSec = typeof currentTime !== 'undefined' ? currentTime : 0;
+
+    // Check if within any scheduled metronome tick window
+    let inMetronomeGating = false;
+    if (this.metronomeTicks && this.metronomeTicks.length > 0) {
+      // Clean up past ticks (duration + padding of 0.2s)
+      this.metronomeTicks = this.metronomeTicks.filter(tick => curTimeSec < tick.time + tick.duration + 0.2);
+      
+      for (let i = 0; i < this.metronomeTicks.length; i++) {
+        const tick = this.metronomeTicks[i];
+        // Check if we are inside the tick window
+        if (curTimeSec >= tick.time - 0.02 && curTimeSec <= tick.time + tick.duration) {
+          inMetronomeGating = true;
+          break;
+        }
+      }
+    }
+
+    // 5. EVALUATE TRANSIENT HIT
     if (this.cooldownSamples <= 0 && flux > 0) {
-      let threshold = 0.012;
-      let usedEchoFilterMs = 25;
+      // Calculate dynamic sensitivity threshold based on adaptive floor and sensitivity setting
+      let threshold = Math.max(this.adaptiveNoiseFloor * this.ghostNoteSensitivity, 0.0035);
+      let usedEchoFilterMs = this.echoFilterMs;
 
-      if (this.autoMode) {
-        // Auto Ghost Note Sensitivity: Multiplier of the tracking noise floor (1.5x in Ghost Note Mode, 2.5x normally)
-        const multiplier = this.ghostNotesEnabled ? 1.4 : 2.5;
-        threshold = Math.max(this.adaptiveNoiseFloor * multiplier, 0.008);
-        
-        // Auto Echo Filter: Lockout derived from target BPM interval divided by 8 (bounded between 12ms and 60ms)
-        usedEchoFilterMs = Math.max(12, Math.min(60, (60000 / this.targetBpm) / 8));
-      } else {
-        // Advanced manual preset overrides (Using stable adaptive noise tracking as the base multiplier)
-        threshold = Math.max(this.adaptiveNoiseFloor * this.ghostNoteSensitivity, 0.008);
-        usedEchoFilterMs = this.echoFilterMs;
+      // Metronome Attenuator: If the metronome plays, the threshold/gate is momentarily pushed up 
+      // only for that micro-window, then drops back down instantly to catch soft hits.
+      if (inMetronomeGating) {
+        threshold = threshold * 5.0; // Spike transient requirement 5x during clicking to absorb speaker bleed
       }
 
       // Check peak rise against computed threshold - use dynamic fallback for soft strokes
-      const minMagAllowed = Math.max(0.005, this.adaptiveNoiseFloor * 1.05);
-      if (flux > threshold && currentMag > minMagAllowed) {
+      let minMagAllowed = Math.max(0.003, this.adaptiveNoiseFloor * 1.05);
+      if (inMetronomeGating) {
+        minMagAllowed = minMagAllowed * 4.0; // Raise overall magnitude floor as well during feedback window
+      }
+
+      if (flux > threshold && frameRMS > minMagAllowed) {
         // Trigger hit event back to the React scheduler thread
         const eventTime = typeof currentTime !== 'undefined' ? currentTime : (Date.now() / 1000);
         this.port.postMessage({ 
@@ -111,7 +133,7 @@ class StrokeProcessor extends AudioWorkletProcessor {
           autoThresholdApplied: threshold
         });
         
-        // Set exact sample-level cooldown lockout
+        // Lock out the microphone cleanly to separate strokes (derived debounce / cooldown lockout)
         const sampleRateHz = typeof sampleRate !== 'undefined' ? sampleRate : 44100;
         this.cooldownSamples = (usedEchoFilterMs / 1000) * sampleRateHz;
       }

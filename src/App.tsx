@@ -11,9 +11,7 @@ import {
   Info,
   Play,
   Pause,
-  SlidersHorizontal,
   RefreshCw,
-  Sparkles,
   Volume2,
   X,
   Smartphone,
@@ -35,6 +33,9 @@ export default function App() {
   // Zone 2 Metronome states
   const [targetBPM, setTargetBPM] = useState(120);
   const [isMetronomePlaying, setIsMetronomePlaying] = useState(false);
+
+  // Pad Strike Sensitivity (1 to 100) - determines physical force required
+  const [strike, setStrike] = useState<number>(30);
 
   // Zone 3 Presets & Auto Calibration Settings
   const [ghostNoteSetting, setGhostNoteSetting] = useState<'ghost' | 'standard' | 'noisy' | 'calibrated'>('standard');
@@ -74,6 +75,8 @@ export default function App() {
   const strokeCountRef = useRef<number>(0);
   const hitTimestampsRef = useRef<number[]>([]);
   const lastHitTimeRef = useRef<number>(0);
+  const lastFeedbackToneTimeRef = useRef<number>(0);
+  const lastMetronomeTickTimesRef = useRef<number[]>([]);
   const tapTimesRef = useRef<number[]>([]);
   const metronomeTimerRef = useRef<number | null>(null);
   const nextTickTimeRef = useRef<number>(0);
@@ -84,16 +87,11 @@ export default function App() {
     metronomeBpmRef.current = targetBPM;
   }, [targetBPM]);
 
-  // Compute ghost note sensitivity ratio based on user settings
+  // Compute transient strike sensitivity multiplier from 1-100 range.
+  // A low strike value corresponds to highly sensitive (low threshold).
+  // A high strike value corresponds to less sensitive (high threshold).
   const getSensitivityMultiplier = () => {
-    switch (ghostNoteSetting) {
-      case 'ghost': return 1.8;
-      case 'noisy': return 4.5;
-      case 'calibrated': return calibratedThresholdApplied;
-      case 'standard':
-      default:
-        return 2.8;
-    }
+    return 0.5 + (strike / 100) * 7.5;
   };
 
   // Auto-calculated Echo Filter (debounce) timing: 60000 / (BPM * 4) * 0.4
@@ -118,7 +116,7 @@ export default function App() {
         echoFilterMs: getEchoFilterMs(),
       });
     }
-  }, [ghostNoteSetting, targetBPM, echoFilterMode, calibratedThresholdApplied]);
+  }, [ghostNoteSetting, targetBPM, echoFilterMode, calibratedThresholdApplied, strike]);
 
   // Mount logic, PWA cues, and local persistence
   useEffect(() => {
@@ -178,6 +176,14 @@ export default function App() {
       setTheme(savedTheme);
     }
 
+    const savedStrike = localStorage.getItem('pad_strike_sensitivity');
+    if (savedStrike) {
+      const parsed = parseInt(savedStrike, 10);
+      if (!isNaN(parsed) && parsed >= 1 && parsed <= 100) {
+        setStrike(parsed);
+      }
+    }
+
     // Cleanup loop
     return () => {
       cleanupAudio();
@@ -198,8 +204,9 @@ export default function App() {
       localStorage.setItem('pad_echo_filter_mode', echoFilterMode);
       localStorage.setItem('pad_tolerance', tolerance.toString());
       localStorage.setItem('pad_theme', theme);
+      localStorage.setItem('pad_strike_sensitivity', strike.toString());
     }
-  }, [targetBPM, ghostNoteSetting, calibratedThresholdApplied, echoFilterMode, tolerance, theme, isMounted]);
+  }, [targetBPM, ghostNoteSetting, calibratedThresholdApplied, echoFilterMode, tolerance, theme, strike, isMounted]);
 
   // Lazy constructor for absolute latency web audio ticks
   const getOrCreateAudioContext = (): AudioContext | null => {
@@ -216,6 +223,7 @@ export default function App() {
 
   // High quality synthesized woodblock cues
   const triggerTickTone = (freq = 900, duration = 0.05) => {
+    lastFeedbackToneTimeRef.current = performance.now();
     const ctx = getOrCreateAudioContext();
     if (!ctx) return;
     try {
@@ -245,9 +253,6 @@ export default function App() {
       strokeCountRef.current += 1;
       hitTimestampsRef.current.push(now);
 
-      // Low latency acoustic feedback
-      triggerTickTone(540, 0.025);
-
       // Immediate visual pulse 
       const timingIndicator = document.getElementById('timing-ring-indicator');
       if (timingIndicator) {
@@ -265,6 +270,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ([' ', 'd', 'f', 'j'].includes(e.key.toLowerCase())) {
+        if (e.repeat) return;
         const activeEl = document.activeElement;
         if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
           return;
@@ -313,6 +319,23 @@ export default function App() {
         gain.gain.exponentialRampToValueAtTime(0.001, time + 0.035);
         osc.start(time);
         osc.stop(time + 0.035);
+
+        // Record the physical time when this click will emit from the speakers to blank it out in microphone processing
+        const timeTillPlayMs = (time - audioCtxRef.current.currentTime) * 1000;
+        const tickPlayTimestamp = performance.now() + timeTillPlayMs;
+        lastMetronomeTickTimesRef.current.push(tickPlayTimestamp);
+        if (lastMetronomeTickTimesRef.current.length > 30) {
+          lastMetronomeTickTimesRef.current.shift();
+        }
+
+        // Stream scheduled context time down to the AudioWorklet DSP thread
+        if (workletNodeRef.current) {
+          workletNodeRef.current.port.postMessage({
+            type: 'METRONOME_TICK',
+            time: time,
+            duration: 0.12 // 120ms
+          });
+        }
       } catch (err) {}
     };
 
@@ -410,11 +433,9 @@ export default function App() {
         navigator.mediaSession.setActionHandler('play', () => {
           getOrCreateAudioContext();
           setIsMetronomePlaying(true);
-          triggerTickTone(1050, 0.05);
         });
         navigator.mediaSession.setActionHandler('pause', () => {
           setIsMetronomePlaying(false);
-          triggerTickTone(900, 0.05);
         });
       } catch (error) {
         console.warn('Media Session Action Handlers failed to bind:', error);
@@ -506,11 +527,14 @@ export default function App() {
       workletNode.port.onmessage = (event) => {
         if (event.data.type === 'STROKE_DETECTED') {
           const now = performance.now();
+
+          // Protect against acoustic feedback from self-synthesized chime or reset tones (lockout of 250ms)
+          if (now - lastFeedbackToneTimeRef.current < 250) {
+            return;
+          }
+
           strokeCountRef.current++;
           hitTimestampsRef.current.push(now);
-
-          // Audio response
-          triggerTickTone(540, 0.025);
 
           // Instant physical pulse inside Zone 1 ring
           const ring = document.getElementById('timing-ring-indicator');
@@ -534,9 +558,7 @@ export default function App() {
       setIsEngineReady(true);
       setMicState('active');
 
-      // Confirmation chime
-      triggerTickTone(700, 0.08);
-      setTimeout(() => triggerTickTone(1000, 0.04), 80);
+      // Confirmation chime removed to prevent acoustic crosstalk triggers
 
     } catch (err: any) {
       console.error('Core audio configuration failed:', err);
@@ -611,6 +633,7 @@ export default function App() {
 
         setCalibratedThresholdApplied(mappedTightness);
         setGhostNoteSetting('calibrated');
+        setStrike(Math.max(1, Math.min(100, Math.round(((mappedTightness - 0.5) / 7.5) * 100))));
 
         // Confirming beep
         triggerTickTone(1200, 0.08);
@@ -628,7 +651,6 @@ export default function App() {
     hitTimestampsRef.current = [];
     setStrokeCount(0);
     setLiveSPM(0);
-    triggerTickTone(450, 0.06);
   };
 
   // Tap tempo input handler
@@ -637,8 +659,6 @@ export default function App() {
     const now = performance.now();
     let taps = [...tapTimesRef.current, now].filter(t => now - t < 2500);
     tapTimesRef.current = taps;
-
-    triggerTickTone(1100, 0.35);
 
     if (taps.length >= 2) {
       const g_intervals: number[] = [];
@@ -845,7 +865,6 @@ export default function App() {
               onClick={() => {
                 const nextTheme = theme === 'dark' ? 'light' : 'dark';
                 setTheme(nextTheme);
-                triggerTickTone(650, 0.04);
               }}
               className={`p-1.5 rounded-full border transition-all cursor-pointer flex items-center justify-center ${
                 isDark 
@@ -861,27 +880,11 @@ export default function App() {
               <button 
                 onClick={() => {
                   setShowPWABanner(true);
-                  triggerTickTone(540, 0.05);
                 }}
                 className={`flex items-center gap-1 text-[9px] uppercase font-mono text-emerald-500 bg-emerald-500/5 hover:bg-emerald-500/10 border ${isDark ? 'border-emerald-500/20' : 'border-emerald-500/35'} px-2 py-0.5 rounded-full font-bold transition-all cursor-pointer select-none`}
               >
                 <Download size={10} />
                 PWA
-              </button>
-            )}
-
-            {micState === 'active' ? (
-              <span className={`flex items-center gap-1 text-[9px] uppercase font-mono text-emerald-500 bg-emerald-500/5 border ${isDark ? 'border-emerald-500/20' : 'border-emerald-500/35'} px-2 py-0.5 rounded-full font-bold`}>
-                <span className="w-1 h-1 rounded-full bg-emerald-500 animate-ping" />
-                DSPS OK
-              </span>
-            ) : (
-              <button 
-                onClick={startAudioEngine}
-                className={`flex items-center gap-1 text-[9px] uppercase font-mono ${isDark ? 'text-slate-400 bg-slate-900 border-slate-800 hover:text-white hover:border-slate-700' : 'text-slate-600 bg-slate-150/80 border-slate-250 hover:text-black hover:border-slate-350'} px-2 py-0.5 rounded-full font-bold transition-all cursor-pointer`}
-              >
-                <Mic size={10} />
-                CONNECT
               </button>
             )}
           </div>
@@ -925,7 +928,6 @@ export default function App() {
                 <button
                   onClick={() => {
                     setTargetBPM(b => Math.max(30, b - 2));
-                    triggerTickTone(450, 0.03);
                   }}
                   className={`p-1 rounded-lg border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
                     isDark 
@@ -941,7 +943,6 @@ export default function App() {
                 <button
                   onClick={() => {
                     setIsMetronomePlaying(false);
-                    triggerTickTone(900, 0.05);
                   }}
                   className="px-2.5 py-1 rounded-xl font-mono text-[9px] font-black tracking-widest uppercase bg-emerald-500 hover:bg-emerald-400 text-slate-950 hover:scale-[1.03] active:scale-95 transition-all shadow-md cursor-pointer flex items-center gap-1 shrink-0"
                   title="Pause Clicks"
@@ -953,7 +954,6 @@ export default function App() {
                 <button
                   onClick={() => {
                     setTargetBPM(b => Math.min(300, b + 2));
-                    triggerTickTone(550, 0.03);
                   }}
                   className={`p-1 rounded-lg border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
                     isDark 
@@ -971,7 +971,6 @@ export default function App() {
                 <button
                   onClick={() => {
                     setIsNotificationDismissed(true);
-                    triggerTickTone(400, 0.04);
                   }}
                   className={`p-1 rounded-full border transition-all cursor-pointer active:scale-90 flex items-center justify-center ${
                     isDark 
@@ -1136,7 +1135,6 @@ export default function App() {
             onClick={() => {
               getOrCreateAudioContext();
               setIsMetronomePlaying(!isMetronomePlaying);
-              triggerTickTone(1050, 0.05);
             }}
             className={`w-full py-2.5 rounded-xl font-mono text-[10px] font-black tracking-widest flex items-center justify-center gap-1.5 transition-all text-center cursor-pointer active:scale-95 border uppercase ${
               isMetronomePlaying 
@@ -1158,209 +1156,76 @@ export default function App() {
           </button>
         </section>
 
-
-        {/* ZONE 3: INTUITIVE GHOST NOTE SENSITIVITY AND ECHO FILTER PRESETS */}
-        <section id="zone-3-presets" className={`${isDark ? 'bg-slate-900/40 border-slate-900' : 'bg-white border-slate-200'} p-4 border rounded-2xl flex flex-col gap-3.5 transition-colors duration-200`}>
-          
-          {/* Header row */}
+        {/* ZONE 3: PAD STRIKE SENSITIVITY CONTROLLER */}
+        <section id="zone-3-strike-sensitivity" className={`${isDark ? 'bg-slate-900/40 border-slate-900' : 'bg-white border-slate-200'} p-4 border rounded-2xl flex flex-col gap-3.5 transition-colors duration-200`}>
           <div className="flex items-center justify-between">
-            <h2 className={`text-[10px] font-black font-mono tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-500'} uppercase`}>
-              Sensitivity & Noise Filters
+            <h2 className={`text-[10px] font-black font-mono tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-550'} uppercase flex items-center gap-1`}>
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+              Pad Response & Microphone Reach
             </h2>
-            <button
-              onClick={runAutoCalibration}
-              disabled={isCalibrating}
-              className={`px-3 py-1 text-[9px] font-mono font-black rounded-lg transition-all border flex items-center gap-1 cursor-pointer select-none active:scale-[0.93] ${
-                isCalibrating
-                  ? `${isDark ? 'bg-slate-805 text-slate-555' : 'bg-slate-200 text-slate-400'} border-transparent cursor-not-allowed`
-                  : 'bg-rose-500/10 border-rose-500/20 text-rose-500 hover:bg-rose-500/15'
-              }`}
-            >
-              <Sparkles size={9} />
-              {isCalibrating ? 'LISTENING FILTERS...' : 'AUTO-TUNE MIC'}
-            </button>
+            <span className="text-[10px] bg-indigo-600/10 border border-indigo-500/20 px-2 py-0.5 rounded text-indigo-400 font-mono font-black uppercase">
+              STRIKE: {strike}%
+            </span>
           </div>
 
-          {/* Automatic Noise calibrating overlay */}
-          {isCalibrating && (
-            <div className={`bg-rose-500/5 border ${isDark ? 'border-rose-500/10' : 'border-rose-500/20'} rounded-xl p-3 text-center space-y-1.5 animate-pulse`}>
-              <p className="text-[9px] font-mono text-rose-455 text-rose-500 font-bold uppercase tracking-wide">
-                Analyzing Room Ambiance: DO NOT STRIKE THE PAD
-              </p>
-              <div className={`h-1 ${isDark ? 'bg-slate-950 border-slate-900' : 'bg-slate-150 border-slate-200'} rounded overflow-hidden max-w-xs mx-auto border`}>
-                <div className="h-full bg-rose-500" style={{ width: `${(calibrationSecondsLeft / 2) * 100}%` }} />
-              </div>
-            </div>
-          )}
-
-          {/* Preset Buttons for Ghost Note Sensitivity */}
-          <div className="space-y-1.5">
-            <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-widest block`}>
-              Ghost Note Sensitivity
-            </span>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                onClick={() => setGhostNoteSetting('ghost')}
-                className={`py-2 rounded-xl text-[10px] border transition-all text-center cursor-pointer font-mono font-bold leading-tight ${
-                  ghostNoteSetting === 'ghost'
-                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
-                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150 hover:text-black'}`
-                }`}
-              >
-                🤫 SOFT PAD
-              </button>
-              <button
-                onClick={() => setGhostNoteSetting('standard')}
-                className={`py-2 rounded-xl text-[10px] border transition-all text-center cursor-pointer font-mono font-bold leading-tight ${
-                  ghostNoteSetting === 'standard'
-                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
-                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150 hover:text-black'}`
-                }`}
-              >
-                🥁 STANDARD
-              </button>
-              <button
-                onClick={() => setGhostNoteSetting('noisy')}
-                className={`py-2 rounded-xl text-[10px] border transition-all text-center cursor-pointer font-mono font-bold leading-tight ${
-                  ghostNoteSetting === 'noisy'
-                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
-                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150 hover:text-black'}`
-                }`}
-              >
-                💨 LOUD ROOM
-              </button>
-            </div>
-            {ghostNoteSetting === 'calibrated' && (
-              <p className={`text-[8px] font-mono text-emerald-500 ${isDark ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-emerald-500/10 border-emerald-500/25'} px-2 py-1 rounded-lg text-center font-bold`}>
-                🔒 Custom Calibrated state is active (Multiplier: {calibratedThresholdApplied.toFixed(1)}x)
-              </p>
-            )}
+          {/* Quick slider view */}
+          <div className="px-1">
+            <input 
+              type="range"
+              min="1"
+              max="100"
+              step="1"
+              value={strike}
+              onChange={(e) => setStrike(Number(e.target.value))}
+              className="w-full h-1 bg-indigo-500/25 rounded appearance-none cursor-pointer accent-indigo-500"
+            />
           </div>
 
-          {/* Secondary Echo Filter Lockout Preset */}
-          <div className="space-y-1.5">
-            <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-widest block`}>
-              Echo Filter Lockout
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setEchoFilterMode('standard')}
-                className={`py-2 px-2.5 rounded-xl border text-[10px] font-mono leading-tight text-center transition-all cursor-pointer font-bold ${
-                  echoFilterMode === 'standard'
-                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
-                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150'}`
-                }`}
-              >
-                <div>🥁 Standard Accents</div>
-                <div className={`text-[7.5px] ${isDark ? 'text-slate-500' : 'text-slate-450 text-slate-400'} mt-0.5 uppercase tracking-wide`}>Auto BPM Guard</div>
-              </button>
-              <button
-                onClick={() => setEchoFilterMode('fast')}
-                className={`py-2 px-2.5 rounded-xl border text-[10px] font-mono leading-tight text-center transition-all cursor-pointer font-bold ${
-                  echoFilterMode === 'fast'
-                    ? `border-emerald-400 bg-emerald-500/5 ${isDark ? 'text-slate-100' : 'text-emerald-600'} font-black`
-                    : `${isDark ? 'border-slate-850 bg-slate-950 text-slate-400 hover:border-slate-800' : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-150'}`
-                }`}
-              >
-                <div>⚡ Lightning Rolls</div>
-                <div className={`text-[7.5px] ${isDark ? 'text-slate-500' : 'text-slate-455 text-slate-400'} mt-0.5 uppercase tracking-wide`}>Locked 12ms filter</div>
-              </button>
-            </div>
+          <div className="flex justify-between text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider px-1">
+            <span>Soft Taps / Arm's Length Away</span>
+            <span>Heavy Solid Strokes / Close to Pad</span>
           </div>
         </section>
 
-
-        {/* ACCORDION COLLAPSIBLE DRAWER: ADVANCED AUDIO DIAGNOSTICS */}
-        <section id="advanced-diagnostics-drawer" className={`border ${isDark ? 'border-slate-900 bg-slate-950/70' : 'border-slate-200 bg-white shadow-xs'} rounded-2xl overflow-hidden`}>
-          <button
-            onClick={() => setShowDiagnostics(!showDiagnostics)}
-            className={`w-full px-4 py-3 flex items-center justify-between text-[10px] font-mono font-black ${isDark ? 'text-slate-400 bg-slate-950 hover:bg-slate-900 border-slate-900' : 'text-slate-600 bg-slate-50 hover:bg-slate-100 border-slate-200'} transition-colors cursor-pointer select-none border-b`}
-          >
-            <span className="flex items-center gap-1.5">
-              <SlidersHorizontal size={11} className="text-emerald-500" />
-              ADVANCED AUDIO DIAGNOSTICS
-            </span>
-            <span className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'} font-bold`}>{showDiagnostics ? 'COLLAPSE ▲' : 'EXPAND VIEW ▼'}</span>
-          </button>
-
-          {showDiagnostics && (
-            <div className={`p-4 ${isDark ? 'bg-slate-950 border-slate-900 text-slate-100' : 'bg-white border-slate-200 text-slate-800'} border-t space-y-4 text-xs font-mono transition-colors`}>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <span className={`${isDark ? 'text-slate-500' : 'text-slate-405 text-slate-400'} text-[9px] block`}>ECHO FILTER DELAY</span>
-                  <div className={`text-sm font-bold ${isDark ? 'text-slate-100' : 'text-slate-955 text-slate-900'}`}>
-                    {getEchoFilterMs()} ms
-                  </div>
-                  <p className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-450 text-slate-400'} leading-snug`}>
-                    Double trigger lockout gate calculated from target {targetBPM} BPM.
-                  </p>
-                </div>
-
-                <div className="space-y-1">
-                  <span className={`${isDark ? 'text-slate-500' : 'text-slate-405 text-slate-400'} text-[9px] block`}>GHOST LIMIT MULTIPLIER</span>
-                  <div className={`text-sm font-bold ${isDark ? 'text-slate-100' : 'text-slate-955 text-slate-900'}`}>
-                    {getSensitivityMultiplier().toFixed(1)}x
-                  </div>
-                  <p className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-450 text-slate-400'} leading-snug`}>
-                    Constant multiplier against background floor level.
-                  </p>
-                </div>
+        {/* CONNECT CTA ACTIVE / INACTIVE ALIGNED TOGGLE CARD */}
+        <section className="mt-2 text-center">
+          {isEngineReady ? (
+            <div className={`${isDark ? 'bg-slate-900/60 border-emerald-500/25 text-slate-100' : 'bg-white border-emerald-500/20 shadow-xs text-slate-900'} border p-5 rounded-2xl text-center space-y-3.5 transition-colors`}>
+              <div className="relative flex h-6 w-6 mx-auto items-center justify-center">
+                <span className="animate-ping absolute inline-flex h-5 w-5 rounded-full bg-emerald-400 opacity-75"></span>
+                <Mic className="text-emerald-500 relative shrink-0 animate-pulse" size={18} />
               </div>
-
-              <div className={`pt-3 border-t ${isDark ? 'border-slate-900' : 'border-slate-205 border-slate-200'} space-y-1.5`}>
-                <div className="flex justify-between items-center text-[9px]">
-                  <span className={`${isDark ? 'text-slate-500' : 'text-slate-405 text-slate-400'}`}>BIQUAD HIGHPASS CUTOFF</span>
-                  <span className={`font-bold ${isDark ? 'text-slate-100' : 'text-slate-950'}`}>900 Hz</span>
-                </div>
-                <div className={`h-1 ${isDark ? 'bg-slate-900' : 'bg-slate-100'} rounded overflow-hidden`}>
-                  <div className="h-full bg-emerald-500/40 w-[45%]" />
-                </div>
-                <span className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-450 text-slate-400'} block`}>
-                  Hard cut filtering out low AC drafts or background talk hums. High pitch stick click hits are preserved locktight.
-                </span>
+              <div className="space-y-1">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-emerald-500">Acoustic Stream Active</h4>
+                <p className={`text-[9.5px] ${isDark ? 'text-slate-400 font-normal' : 'text-slate-550'} max-w-xs mx-auto leading-relaxed font-mono`}>
+                  Precision AudioWorklet thread active. Pad transients are tracked lock-tight in real-time.
+                </p>
               </div>
-
-              <div className={`pt-3 border-t ${isDark ? 'border-slate-900' : 'border-slate-205 border-slate-200'} space-y-1.5`}>
-                <div className="flex justify-between text-[10px] font-bold">
-                  <span className={`${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Manual Tolerance Adjuster</span>
-                  <span className="text-emerald-505 text-emerald-500">±{tolerance} BPM</span>
-                </div>
-                <div className={`flex items-center gap-1 ${isDark ? 'bg-slate-900/50' : 'bg-slate-100'} p-1 rounded-lg`}>
-                  {[2, 4, 6, 8, 12, 16].map((it) => (
-                    <button
-                      key={it}
-                      onClick={() => setTolerance(it)}
-                      className={`flex-1 py-1 rounded text-[9px] transition-all cursor-pointer font-bold ${
-                        tolerance === it 
-                          ? `${isDark ? 'bg-slate-800 border-slate-700 text-emerald-400' : 'bg-white border border-slate-205 text-emerald-600 shadow-xs'}` 
-                          : `${isDark ? 'text-slate-500 hover:text-white' : 'text-slate-400 hover:text-slate-900'}`
-                      }`}
-                    >
-                      ±{it}
-                    </button>
-                  ))}
-                </div>
+              <button
+                onClick={cleanupAudio}
+                className="px-5 py-2 rounded-xl font-mono text-[9px] font-black text-white bg-rose-600 hover:bg-rose-500 active:scale-95 transition-all shadow-md cursor-pointer uppercase tracking-widest border border-rose-700/20"
+              >
+                Disconnect Mic
+              </button>
+            </div>
+          ) : (
+            <div className={`${isDark ? 'bg-slate-900/40 border-slate-900 text-slate-100' : 'bg-white border-slate-205 shadow-xs text-slate-900'} border border-dashed p-5 rounded-2xl text-center space-y-3.5 transition-colors`}>
+              <MicOff className="mx-auto text-slate-400" size={18} />
+              <div className="space-y-1">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-emerald-500">Connect Mic Capture</h4>
+                <p className={`text-[9.5px] ${isDark ? 'text-slate-550' : 'text-slate-400'} max-w-xs mx-auto leading-relaxed font-mono`}>
+                  Initialize our fast thread-isolated pipeline to track practice strokes.
+                </p>
               </div>
+              <button
+                onClick={startAudioEngine}
+                className="px-5 py-2 rounded-xl font-mono text-[9px] font-black text-slate-950 bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all shadow-md cursor-pointer uppercase tracking-widest"
+              >
+                Connect Mic
+              </button>
             </div>
           )}
         </section>
-
-        {/* CONNECT CTA INACTIVE BANNER */}
-        {!isEngineReady && (
-          <div className={`${isDark ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200 shadow-xs'} border border-dashed p-4 rounded-2xl text-center space-y-2 transition-colors`}>
-            <Mic className="mx-auto text-emerald-500 animate-bounce" size={20} />
-            <h4 className={`font-bold text-xs ${isDark ? 'text-slate-100' : 'text-slate-900'} uppercase tracking-widest`}>Connect Mic Capture</h4>
-            <p className={`text-[9px] ${isDark ? 'text-slate-500' : 'text-slate-400'} max-w-xs mx-auto leading-relaxed font-mono`}>
-              Initialize our standard thread-isolated AudioWorklet DSP pipeline to track physical pad actions.
-            </p>
-            <button
-              onClick={startAudioEngine}
-              className="px-4 py-1.5 rounded-xl font-mono text-[10px] font-black text-slate-950 bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all shadow-md cursor-pointer uppercase tracking-wider"
-            >
-              Start Acoustic Stream
-            </button>
-          </div>
-        )}
 
       </main>
 
@@ -1376,22 +1241,6 @@ export default function App() {
           >
             <RefreshCw size={9} /> RESET STATS
           </button>
-          <span className={`${isDark ? 'text-slate-800' : 'text-slate-300'} font-bold`}>//</span>
-          {isEngineReady ? (
-            <button 
-              onClick={cleanupAudio}
-              className="text-rose-500 hover:text-rose-600 flex items-center gap-1 transition-all cursor-pointer font-black"
-            >
-              <MicOff size={9} /> DISCONNECT MIC
-            </button>
-          ) : (
-            <button 
-              onClick={startAudioEngine}
-              className="text-emerald-500 hover:text-emerald-600 flex items-center gap-1 transition-all cursor-pointer font-black"
-            >
-              <Mic size={9} /> CONNECT MIC
-            </button>
-          )}
         </div>
       </footer>
     </div>
