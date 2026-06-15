@@ -5,7 +5,10 @@ const ASSETS = [
   '/src/main.tsx',
   '/src/App.tsx',
   '/src/index.css',
-  '/manifest.json'
+  '/manifest.json',
+  '/icon-192.svg',
+  '/icon-512.svg',
+  '/processors/stroke-processor.js'
 ];
 
 self.addEventListener('install', (event) => {
