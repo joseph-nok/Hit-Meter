@@ -338,22 +338,36 @@ export default function App() {
       const now = performance.now();
       const hits = hitTimestampsRef.current;
 
-      // Filter to sliding 8-second window
-      const activeHits = hits.filter(t => now - t < 8000);
+      // Dynamic sliding history window: Max(3000, 4.5 beats at target BPM)
+      // This ensures fast response at high tempo and safe capture at slow tempo
+      const beatIntervalMs = 60000 / targetBPM;
+      const dynamicWindow = Math.max(3000, beatIntervalMs * 4.5);
+      
+      const activeHits = hits.filter(t => now - t < dynamicWindow);
       hitTimestampsRef.current = activeHits;
 
       const lastHit = activeHits[activeHits.length - 1];
       const idleTime = now - lastHit;
 
-      if (activeHits.length >= 2 && idleTime < 4500) {
-        const intervals: number[] = [];
-        for (let i = 1; i < activeHits.length; i++) {
-          intervals.push(activeHits[i] - activeHits[i - 1]);
-        }
-        const averageInterval = intervals.reduce((sum, item) => sum + item, 0) / intervals.length;
-        if (averageInterval > 40) {
-          const spm = Math.round(60000 / averageInterval);
-          setLiveSPM(spm);
+      // Fast responsive idle drop: reset SPM if silent for 1.8x a beat or 1.8 seconds max
+      const maxIdle = Math.max(1800, beatIntervalMs * 1.8);
+
+      if (activeHits.length >= 2 && idleTime < maxIdle) {
+        // Slice to only the last 5 hits (4 intervals) to compute instantaneous speed
+        // This is extremely responsive, reacting to speed changes in exactly 2-3 hits!
+        const recentHits = activeHits.slice(-5);
+        if (recentHits.length >= 2) {
+          const intervals: number[] = [];
+          for (let i = 1; i < recentHits.length; i++) {
+            intervals.push(recentHits[i] - recentHits[i - 1]);
+          }
+          const averageInterval = intervals.reduce((sum, item) => sum + item, 0) / intervals.length;
+          if (averageInterval > 40) {
+            const spm = Math.round(60000 / averageInterval);
+            setLiveSPM(spm);
+          } else {
+            setLiveSPM(0);
+          }
         } else {
           setLiveSPM(0);
         }
@@ -363,7 +377,7 @@ export default function App() {
     }, 120);
 
     return () => clearInterval(calcInterval);
-  }, []);
+  }, [targetBPM]);
 
   // Background noise monitoring loop (Only active during calibration)
   useEffect(() => {

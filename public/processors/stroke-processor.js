@@ -57,25 +57,29 @@ class StrokeProcessor extends AudioWorkletProcessor {
     }
     currentMag /= bufferSize;
 
-    // 3. GHOST NOTE SENSITIVITY AUTOMATION (Adaptive Noise Floor Tracking)
-    // If the sound is sustained and steady (like continuous desk fans, A/C, air blow, background talking),
-    // we smoothly drift the noise floor up or down to absorb background energy.
-    if (currentMag < this.adaptiveNoiseFloor) {
-      // Smoothly drift down to match quiet environments
-      this.adaptiveNoiseFloor = this.adaptiveNoiseFloor * 0.999 + currentMag * 0.001;
-    } else {
-      // Smoothly drift up to absorb continuous loud ambient noise
-      this.adaptiveNoiseFloor = this.adaptiveNoiseFloor * 0.993 + currentMag * 0.007;
-    }
-
     if (this.lastMag === null) {
       this.lastMag = currentMag;
       return true;
     }
 
-    // 4. Compute Transient Flux (The sudden positive rise velocity in energy)
+    // 3. Compute Transient Flux (The sudden positive rise velocity in energy)
     const flux = currentMag - this.lastMag;
     this.lastMag = currentMag;
+
+    // 4. GHOST NOTE SENSITIVITY AUTOMATION (Adaptive Noise Floor Tracking with Quiescent Gate)
+    // We only adapt and drift the noise floor up when the signal is relatively stable (low flux).
+    // This blocks recurring drum strokes from artificially desensitizing the sensor.
+    const isSteady = Math.abs(flux) < 0.003;
+    if (isSteady) {
+      this.adaptiveNoiseFloor = this.adaptiveNoiseFloor * 0.992 + currentMag * 0.008;
+    } else {
+      // If quiet but unsteady, we can still drift down slowly to recover sensitivity
+      if (currentMag < this.adaptiveNoiseFloor) {
+        this.adaptiveNoiseFloor = this.adaptiveNoiseFloor * 0.996 + currentMag * 0.004;
+      }
+    }
+    // Safe bounds
+    this.adaptiveNoiseFloor = Math.max(0.002, Math.min(0.08, this.adaptiveNoiseFloor));
 
     // 5. EVALUATE TRANSIENT HIT WITH SELF-TUNED ENGINES
     if (this.cooldownSamples <= 0 && flux > 0) {
@@ -85,18 +89,19 @@ class StrokeProcessor extends AudioWorkletProcessor {
       if (this.autoMode) {
         // Auto Ghost Note Sensitivity: Multiplier of the tracking noise floor (1.5x in Ghost Note Mode, 2.5x normally)
         const multiplier = this.ghostNotesEnabled ? 1.4 : 2.5;
-        threshold = Math.max(this.adaptiveNoiseFloor * multiplier, 0.011);
+        threshold = Math.max(this.adaptiveNoiseFloor * multiplier, 0.008);
         
         // Auto Echo Filter: Lockout derived from target BPM interval divided by 8 (bounded between 12ms and 60ms)
         usedEchoFilterMs = Math.max(12, Math.min(60, (60000 / this.targetBpm) / 8));
       } else {
         // Advanced manual preset overrides (Using stable adaptive noise tracking as the base multiplier)
-        threshold = Math.max(this.adaptiveNoiseFloor * this.ghostNoteSensitivity, 0.011);
+        threshold = Math.max(this.adaptiveNoiseFloor * this.ghostNoteSensitivity, 0.008);
         usedEchoFilterMs = this.echoFilterMs;
       }
 
-      // Check peak rise against computed threshold
-      if (flux > threshold && currentMag > 0.012) {
+      // Check peak rise against computed threshold - use dynamic fallback for soft strokes
+      const minMagAllowed = Math.max(0.005, this.adaptiveNoiseFloor * 1.05);
+      if (flux > threshold && currentMag > minMagAllowed) {
         // Trigger hit event back to the React scheduler thread
         const eventTime = typeof currentTime !== 'undefined' ? currentTime : (Date.now() / 1000);
         this.port.postMessage({ 
