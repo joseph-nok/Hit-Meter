@@ -236,9 +236,9 @@ class StrokeProcessor extends AudioWorkletProcessor {
         }
         this.lastHitTime = curTimeSec;
 
-        // Lock out frame evaluations for a custom lockout window (guaranteed min of 55ms)
+        // Lock out frame evaluations for a custom lockout window (guaranteed min of 12ms)
         // This stops mechanical stick vibration, bounciness, and double hits from registering as +2 or +3.
-        const lockoutMs = Math.max(55, this.echoFilterMs || 55);
+        const lockoutMs = Math.max(12, this.echoFilterMs || 12);
         this.debounceTimer = (lockoutMs / 1000) * sampleRateHz; 
       }
     }

@@ -141,12 +141,15 @@ export default function App() {
 
   // Auto-calculated Echo Filter (debounce) timing
   // Prevents multiple double/triple trigger counts and chatter on physical pad rattles.
+  // Shrinks dynamically at higher BPMs to seamlessly register high-speed singles and double strokes.
   const getEchoFilterMs = () => {
+    const sixteenthInterval = 60000 / (targetBPM * 4);
     if (echoFilterMode === 'fast') {
-      return 55; // Fast mode is locked to standard fast rollover frequency
+      // Fast mode utilizes a tight 38% timing window of the current 16th-note subdivision
+      return Math.max(12, Math.round(sixteenthInterval * 0.38));
     }
-    // Standard mode is proportional to grid but padded to block rebounds/chatter
-    return Math.max(90, Math.round(60000 / (targetBPM * 4) * 0.75));
+    // Standard mode utilizes a safe 60% timing window to swallow bounces while following tempo
+    return Math.max(22, Math.round(sixteenthInterval * 0.60));
   };
 
   // Sync settings dynamically straight down to AudioWorklet Node
@@ -567,7 +570,7 @@ export default function App() {
           // Double trigger rejection on consecutive incoming events
           if (hitTimestampsRef.current.length > 0) {
             const lastRegistered = hitTimestampsRef.current[hitTimestampsRef.current.length - 1];
-            const minInterval = echoFilterMode === 'fast' ? 55 : 90;
+            const minInterval = getEchoFilterMs();
             if ((now - lastRegistered) < minInterval) {
               return;
             }
@@ -1258,6 +1261,41 @@ export default function App() {
           <div className="flex justify-between text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider px-1">
             <span>Standard Sensitivity (100%)</span>
             <span>Ultra Strict Gates / Clean Solid Hits (200%)</span>
+          </div>
+
+          {/* Debounce filter mode toggle */}
+          <div className={`flex items-center justify-between mt-1 pt-2 border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+            <span className={`text-[8.5px] font-mono font-bold uppercase tracking-wider ${isDark ? 'text-slate-550' : 'text-slate-450'}`}>
+              Lockout Debounce Range
+            </span>
+            <div className={`flex p-0.5 rounded-lg border ${isDark ? 'bg-slate-950/50 border-slate-850' : 'bg-slate-100 border-slate-200'}`}>
+              <button
+                onClick={() => {
+                  setEchoFilterMode('standard');
+                  localStorage.setItem('pad_echo_filter_mode', 'standard');
+                }}
+                className={`px-2.5 py-1 text-[8px] font-mono uppercase font-black rounded-md transition-all cursor-pointer ${
+                  echoFilterMode === 'standard'
+                    ? 'bg-indigo-500 text-white shadow-[0_2px_4px_rgba(99,102,241,0.2)]'
+                    : `${isDark ? 'text-slate-500 hover:text-slate-400' : 'text-slate-600 hover:text-slate-800'}`
+                }`}
+              >
+                Standard
+              </button>
+              <button
+                onClick={() => {
+                  setEchoFilterMode('fast');
+                  localStorage.setItem('pad_echo_filter_mode', 'fast');
+                }}
+                className={`px-2.5 py-1 text-[8px] font-mono uppercase font-black rounded-md transition-all cursor-pointer ${
+                  echoFilterMode === 'fast'
+                    ? 'bg-indigo-500 text-white shadow-[0_2px_4px_rgba(99,102,241,0.2)]'
+                    : `${isDark ? 'text-slate-500 hover:text-slate-400' : 'text-slate-600 hover:text-slate-800'}`
+                }`}
+              >
+                Fast (Doubles)
+              </button>
+            </div>
           </div>
         </section>
 
