@@ -78,6 +78,7 @@ export default function App() {
   const lastFeedbackToneTimeRef = useRef<number>(0);
   const lastMetronomeTickTimesRef = useRef<number[]>([]);
   const tapTimesRef = useRef<number[]>([]);
+  const lastLockedTimeRef = useRef<number>(0);
   const metronomeTimerRef = useRef<number | null>(null);
   const nextTickTimeRef = useRef<number>(0);
   const metronomeBpmRef = useRef<number>(120);
@@ -85,6 +86,51 @@ export default function App() {
   // Keep ref synchronized with changing states
   useEffect(() => {
     metronomeBpmRef.current = targetBPM;
+  }, [targetBPM]);
+
+  const toleranceRef = useRef(tolerance);
+  useEffect(() => {
+    toleranceRef.current = tolerance;
+  }, [tolerance]);
+
+  const recalculateSPM = (now: number) => {
+    const currentBpm = metronomeBpmRef.current;
+    const hits = hitTimestampsRef.current;
+
+    const beatIntervalMs = 60000 / currentBpm;
+    // Rolling sliding history window
+    const dynamicWindow = Math.max(3500, beatIntervalMs * 4.5);
+    
+    const activeHits = hits.filter(t => now - t < dynamicWindow);
+    hitTimestampsRef.current = activeHits;
+
+    if (activeHits.length >= 2) {
+      // Use the last up to 6 hits (5 intervals) for a robust rolling average speed:
+      // this avoids single-hit timing noise while keeping it highly responsive.
+      const recentHits = activeHits.slice(-6);
+      if (recentHits.length >= 2) {
+        const intervals: number[] = [];
+        for (let i = 1; i < recentHits.length; i++) {
+          intervals.push(recentHits[i] - recentHits[i - 1]);
+        }
+        const averageInterval = intervals.reduce((sum, item) => sum + item, 0) / intervals.length;
+        if (averageInterval > 40) {
+          const spm = Math.round(60000 / averageInterval);
+          setLiveSPM(spm);
+        } else {
+          setLiveSPM(0);
+        }
+      } else {
+        setLiveSPM(0);
+      }
+    } else {
+      setLiveSPM(0);
+    }
+  };
+
+  const recalculateSPMRef = useRef(recalculateSPM);
+  useEffect(() => {
+    recalculateSPMRef.current = recalculateSPM;
   }, [targetBPM]);
 
   // Compute transient strike sensitivity multiplier from 1-100 range.
@@ -263,6 +309,7 @@ export default function App() {
       }
 
       setStrokeCount(strokeCountRef.current);
+      recalculateSPM(now);
     }
   };
 
@@ -374,29 +421,10 @@ export default function App() {
       const lastHit = activeHits[activeHits.length - 1];
       const idleTime = now - lastHit;
 
-      // Fast responsive idle drop: reset SPM if silent for 1.8x a beat or 1.8 seconds max
-      const maxIdle = Math.max(1800, beatIntervalMs * 1.8);
+      // Fast responsive idle drop: reset SPM if silent for 2.0x a beat or 2.0 seconds max
+      const maxIdle = Math.max(2000, beatIntervalMs * 2.0);
 
-      if (activeHits.length >= 2 && idleTime < maxIdle) {
-        // Slice to only the last 5 hits (4 intervals) to compute instantaneous speed
-        // This is extremely responsive, reacting to speed changes in exactly 2-3 hits!
-        const recentHits = activeHits.slice(-5);
-        if (recentHits.length >= 2) {
-          const intervals: number[] = [];
-          for (let i = 1; i < recentHits.length; i++) {
-            intervals.push(recentHits[i] - recentHits[i - 1]);
-          }
-          const averageInterval = intervals.reduce((sum, item) => sum + item, 0) / intervals.length;
-          if (averageInterval > 40) {
-            const spm = Math.round(60000 / averageInterval);
-            setLiveSPM(spm);
-          } else {
-            setLiveSPM(0);
-          }
-        } else {
-          setLiveSPM(0);
-        }
-      } else {
+      if (!activeHits.length || idleTime >= maxIdle) {
         setLiveSPM(0);
       }
     }, 120);
@@ -546,6 +574,7 @@ export default function App() {
           }
 
           setStrokeCount(strokeCountRef.current);
+          recalculateSPMRef.current(now);
         }
       };
 
@@ -707,9 +736,16 @@ export default function App() {
   const bpmDifference = Math.abs(liveSPM - targetBPM);
   const isWithinTiming = isStroking && bpmDifference <= tolerance;
 
+  if (isWithinTiming) {
+    lastLockedTimeRef.current = performance.now();
+  }
+
   let cadenceLock: 'silent' | 'locked' | 'drift' = 'silent';
   if (isStroking) {
-    cadenceLock = isWithinTiming ? 'locked' : 'drift';
+    const timeSinceLastLock = performance.now() - lastLockedTimeRef.current;
+    // Keep locked if currently within timing, or within 1.8 seconds grace period
+    const isGracePeriodActive = timeSinceLastLock < 1800;
+    cadenceLock = (isWithinTiming || isGracePeriodActive) ? 'locked' : 'drift';
   }
 
   if (!isMounted) {
@@ -1080,14 +1116,8 @@ export default function App() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               Metronome Grid
             </h2>
-            <div className="flex items-center gap-1">
-              <span className={`text-[8px] font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>TOLERANCE:</span>
-              <button 
-                onClick={() => setTolerance(t => t === 4 ? 8 : t === 8 ? 12 : 4)}
-                className={`text-[9px] font-mono font-bold text-emerald-500 hover:text-emerald-400 ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-100 border-slate-200'} px-2 py-0.5 rounded cursor-pointer select-none`}
-              >
-                ±{tolerance} BPM
-              </button>
+            <div className="flex items-center gap-1 text-[9px] font-mono font-bold text-emerald-500 bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
+              GATE: ±{tolerance} BPM
             </div>
           </div>
 
@@ -1121,17 +1151,45 @@ export default function App() {
             </button>
           </div>
 
-          {/* Quick slider view */}
-          <div className="px-1">
-            <input 
-              type="range"
-              min="40"
-              max="240"
-              step="1"
-              value={targetBPM}
-              onChange={(e) => setTargetBPM(Number(e.target.value))}
-              className={`w-full h-1 ${isDark ? 'bg-slate-850' : 'bg-slate-200'} rounded appearance-none cursor-pointer accent-emerald-500`}
-            />
+          {/* Symmetrical Sliders Container */}
+          <div className="space-y-3 px-1">
+            {/* Target BPM Slider */}
+            <div className="space-y-1">
+              <div className="flex justify-between items-center text-[7px] text-slate-550 font-mono font-bold uppercase tracking-wider">
+                <span className={`${isDark ? 'text-slate-500' : 'text-slate-450'}`}>BPM Target Tempo</span>
+                <span className={`${isDark ? 'text-slate-400' : 'text-slate-600'}`}>{targetBPM} BPM</span>
+              </div>
+              <input 
+                type="range"
+                min="40"
+                max="240"
+                step="1"
+                value={targetBPM}
+                onChange={(e) => setTargetBPM(Number(e.target.value))}
+                className={`w-full h-1 ${isDark ? 'bg-slate-850' : 'bg-slate-200'} rounded appearance-none cursor-pointer accent-emerald-500`}
+              />
+            </div>
+
+            {/* Rhythm Tolerance Slider (4 to 20 BPM) */}
+            <div className="space-y-1">
+              <div className="flex justify-between items-center text-[7px] text-slate-550 font-mono font-bold uppercase tracking-wider">
+                <span className={`${isDark ? 'text-slate-500' : 'text-slate-450'}`}>Rhythm Tolerance Gate</span>
+                <span className="text-emerald-550 text-emerald-500 font-extrabold">±{tolerance} BPM</span>
+              </div>
+              <input 
+                type="range"
+                min="4"
+                max="20"
+                step="1"
+                value={tolerance}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setTolerance(val);
+                  localStorage.setItem('pad_tolerance', val.toString());
+                }}
+                className={`w-full h-1 ${isDark ? 'bg-slate-850' : 'bg-slate-200'} rounded appearance-none cursor-pointer accent-emerald-500`}
+              />
+            </div>
           </div>
 
           {/* Audio CLICK trigger toggle button */}
